@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 from grid_mdp import create_grid_mdp
 from ladder_mdp import create_ladder_mdp
@@ -15,6 +16,9 @@ import random
 
 np.random.seed(0)
 random.seed(0)
+
+RESULT_DIR = "results"
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 
 # PG RUN
@@ -118,12 +122,20 @@ def plot_experiment(mdp, mdp_type, mu_type, init_type, lr, steps, m_values):
     plt.legend()
     plt.grid(alpha=0.3)
     plt.tight_layout()
+
+    filename = (
+        f"{mdp_type}_mu-{mu_type}_init-{init_type}_"
+        f"lr-{str(lr).replace('.', 'p')}_steps-{steps}.png"
+    )
+    save_path = os.path.join(RESULT_DIR, filename)
+    plt.savefig(save_path, dpi=150)
+    print(f"[SAVED] figure saved to {save_path}")
+
     plt.show()
 
 
 if __name__ == "__main__":
-    # mdp_types = ['ladder', 'random', 'tightrope', 'grid', 'continuous']  
-    mdp_types = ['continuous'] 
+    mdp_types = ['ladder', 'random', 'tightrope', 'grid']  
     
     config = {
         'ladder': {
