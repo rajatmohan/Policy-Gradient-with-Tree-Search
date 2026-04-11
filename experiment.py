@@ -38,11 +38,25 @@ def run_pg(mdp, steps, lr, init_type):
 def run_pgts(mdp, steps, lr, m, init_type):
     pi = init_policy(mdp.S, mdp.A, init_type)
     rewards = []
+    initial_m = m
+    adaptive_m = False
+    if initial_m == -1:
+        adaptive_m = True
+        print("Using adaptive m strategy")
+        adaptive_m_config = {
+            'max_m': 20,
+            'min_m': 1,
+            'window': 5,
+            'std_threshold': 2.0,
+            'growth_rate': 5
+        }
+        m = adaptive_m_config['min_m']  # Start with minimum m
+
 
     for _ in range(steps):
         v = mdp.value_function(pi)
         rewards.append(float(np.dot(mdp.mu, v)))
-        pi = pgts_update(mdp, pi, lr, m)
+        pi = pgts_update(mdp, pi, lr, m, rewards, adaptive_m=adaptive_m, episode=_, adaptive_m_config=adaptive_m_config if adaptive_m else None)
 
     return rewards
 
@@ -136,30 +150,31 @@ def plot_experiment(mdp, mdp_type, mu_type, init_type, lr, steps, m_values):
 
 if __name__ == "__main__":
     mdp_types = ['ladder', 'random', 'tightrope', 'grid']  
+    mdp_types = ['ladder']  
     
     config = {
         'ladder': {
             'start': {
                 0.05: {
                     'steps': 200,
-                    'm_values': [1, 2, 4, 6],
+                    'm_values': [1, 2, 4, 6, -1],
                     'init_type': ['left']
                 },
                 2.0: {
                     'steps': 30,
-                    'm_values': [1, 2, 4],
+                    'm_values': [1, 2, 4, -1],
                     'init_type': ['left']
                 }
             },
             'uniform': {
                 0.05: {
                     'steps': 300,
-                    'm_values': [1, 2, 4, 6],
+                    'm_values': [1, 2, 4, 6, -1],
                     'init_type': ['left']
                 },
                 2.0: {
                     'steps': 50,
-                    'm_values': [1, 2, 4],
+                    'm_values': [1, 2, 4, -1],
                     'init_type': ['left']
                 }
             }

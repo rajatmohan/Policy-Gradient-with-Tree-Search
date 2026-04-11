@@ -30,6 +30,8 @@ def run_pgts(
     optimizer_v,
     episodes=200,
     gamma=0.99,
+    adaptive=False, 
+    max_m=20,
     m=4,
     entropy_coef=0.01
 ):
@@ -49,6 +51,8 @@ def run_pgts(
 
         values = value_net(states_t)
         values_detached = values.detach()
+
+        
 
         returns = compute_m_step_returns(
             rewards,
