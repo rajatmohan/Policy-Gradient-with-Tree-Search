@@ -19,7 +19,10 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
 
     for ep in range(episodes):
 
-        states, actions, rewards, log_probs = env.rollout(policy)
+        states, actions, rewards, log_probs, _ = env.rollout(policy)
+
+        rewards = np.array(rewards, dtype=np.float32)
+        # rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
         returns = compute_returns(rewards, gamma)
         returns = torch.FloatTensor(returns)
@@ -38,7 +41,7 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
         total_reward = sum(rewards)
         rewards_history.append(total_reward)
 
-        if ep % 10 == 0:
-            print(f"[PG] Ep {ep:4d} | Reward: {total_reward:8.2f}")
+        if ep % 50 == 0 or ep == 0 or ep == episodes - 1:
+            print(f"[PG] Ep {ep:4d} | Reward: {total_reward:8.6f}")
 
     return rewards_history

@@ -14,16 +14,27 @@ class Policy(nn.Module):
             nn.Tanh()
         )
 
-        self.mean = nn.Linear(64, action_dim)
+        self.mean = self.mean = nn.Sequential(
+            nn.Linear(64, action_dim),
+            nn.Tanh() # Forces mean action between -1 and 1
+        )
 
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.log_std = nn.Parameter(torch.full((action_dim,), -0.5))
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # Orthogonal init with a specific gain for Tanh
+                nn.init.orthogonal_(m.weight, gain=nn.init.calculate_gain('tanh'))
+                nn.init.constant_(m.bias, 0)
+        
+        # Make the output layer even smaller to start with "gentle" actions
+        nn.init.orthogonal_(self.mean[0].weight, gain=0.01)
 
     def forward(self, state):
         x = self.net(state)
         mean = self.mean(x)
         std = torch.exp(self.log_std)
-        std = torch.clamp(std, 1e-3, 0.5)
-
+        std = torch.clamp(std, 0.01, 1.0)
         return mean, std
 
     def sample_action(self, state):

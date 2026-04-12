@@ -14,5 +14,12 @@ class Value(nn.Module):
             nn.Linear(64, 1)
         )
 
+        # --- NEW INITIALIZATION BLOCK ---
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=nn.init.calculate_gain('tanh'))
+                nn.init.constant_(m.bias, 0)
+        # --------------------------------
+
     def forward(self, state):
-        return self.net(state).squeeze()
+        return self.net(state).squeeze(-1)

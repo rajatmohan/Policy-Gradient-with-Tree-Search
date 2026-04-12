@@ -9,17 +9,20 @@ from continuous.continuous_pgts import run_pgts
 from gymnasium.wrappers import RecordVideo
 from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
+from continuous.lunar_mdp import LunarMDP
 
-SEEDS = [56]
-EPISODES = 800
+SEEDS = [60]
+EPISODES = 1000
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
 
 def get_envs():
+    lunar = LunarMDP()
     return [
-        TwoPeakMDP(),
-        ThreePeakMDP(),
+        # TwoPeakMDP(),
+        # ThreePeakMDP(),
+        lunar
     ]
 
 def run_single(method, seed, env, m = 10):
@@ -29,8 +32,15 @@ def run_single(method, seed, env, m = 10):
     env.reset()
     init_state = env.state
 
-    policy = Policy(1, 1)
-    optimizer_p = torch.optim.Adam(policy.parameters(), lr=3e-3)
+    if env.name == "LUNAR_MDP":
+        policy = Policy(8, 2)  # LunarLanderContinuous has 8D state and 2D action
+        value_net = Value(8)
+    else:
+        policy = Policy(1, 1)
+        value_net = Value(1)
+    
+    optimizer_p = torch.optim.Adam(policy.parameters(), lr=1e-4)        
+    optimizer_v = torch.optim.Adam(value_net.parameters(), lr=1e-3)
 
     env.init_state = init_state
 
@@ -38,9 +48,11 @@ def run_single(method, seed, env, m = 10):
         rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES)
 
     elif method == "PGTS":
-        value_net = Value(1)
-        optimizer_v = torch.optim.Adam(value_net.parameters(), lr=3e-3)
-
+        if env.name == "LUNAR_MDP":
+            value_net = Value(8)
+        else:
+            value_net = Value(1)
+        
         rewards = run_pgts(
             env,
             policy,
@@ -48,7 +60,24 @@ def run_single(method, seed, env, m = 10):
             optimizer_p,
             optimizer_v,
             episodes=EPISODES,
+            adaptive=(m == -1),
+            max_m = m if m != -1 else 20,
             m=m
+        )
+    
+    elif method == "PGTS_WITH_LAGGING":
+        rewards = run_pgts(
+            env,
+            policy,
+            value_net,
+            optimizer_p,
+            optimizer_v,
+            m=m,
+            episodes=EPISODES,
+            adaptive=True, 
+            use_lagging=True,
+            clip_epsilon=0.2,
+            tau = 0.01
         )
 
     final_state = env.state
@@ -84,7 +113,7 @@ def plot_all(env, pg_rewards, pgts_dict):
 
     for m, rewards in pgts_dict.items():
         mean = rewards.mean(axis=0)
-        plt.plot(mean, label=f"PGTS m={m}")
+        plt.plot(mean, label=f"PGTS m={m}" if isinstance(m, int) else f"PGTS {m}", linewidth=3, linestyle="--")
 
     plt.xlabel("Episodes")
     plt.ylabel("Reward")
@@ -98,27 +127,40 @@ def record_agent(env, model_path, tag):
     video_dir = f"{RESULT_DIR}/videos_{tag}"
     os.makedirs(video_dir, exist_ok=True)
 
-    policy = Policy(1, 1)
+    state_dim = env.reset()[0].shape[0]
+
+    if hasattr(env, "env"):
+        base_env = env.env
+        action_dim = base_env.action_space.shape[0]
+    else:
+        env.render_mode = "rgb_array"
+        base_env = env
+        action_dim = env.action_space.shape[0]
+
+    policy = Policy(state_dim, action_dim)
     policy.load_state_dict(torch.load(model_path))
     policy.eval()
 
-    env.render_mode = "rgb_array"
-    env = RecordVideo(env, video_dir, episode_trigger=lambda e: True)
+    video_env = RecordVideo(base_env, video_dir, episode_trigger=lambda e: True)
 
-    state, _ = env.reset()
-    done = False
-    step = 0
+    try:
+        state, _ = video_env.reset()
+        done = False
+        step = 0
 
-    while not done and step < 200:
-        action, _ = policy.sample_action(state)
-        state, _, done, _, _ = env.step(action)
-        step += 1
+        while not done and step < 1000:
+            action, _ = policy.sample_action(state)
+            state, _, done, _, _ = video_env.step(action)
+            step += 1
 
-    env.close()
+    finally:
+        video_env.close()
+
 
 if __name__ == "__main__":
     envs = get_envs()
-    M_VALUES = [1, 5, 10]
+    # M_VALUES = [1, 5, 10]
+    M_VALUES = [-1, 5, 10]
     for env in envs:
         env.reset()
         init_state = env.state
@@ -131,18 +173,25 @@ if __name__ == "__main__":
         pgts_results = {}
         pgts_policies = {}
         for m in M_VALUES:
+            # PGTS without lagging
             print(f"\nRunning PGTS m={m} | {env.name}")
-
             env.init_state = init_state
-
             rewards, states, policy = run_experiment("PGTS", env, m=m)
-
             pgts_results[m] = rewards
             pgts_policies[m] = policy
-
             model_path = f"{RESULT_DIR}/{env.name}_pgts_m{m}.pt"
             torch.save(policy.state_dict(), model_path)
-
             record_agent(env, model_path, f"{env.name}_PGTS_m{m}")
 
+            # PGTS with lagging
+            print(f"\nRunning PGTS LAG m={m} | {env.name}")
+            env.init_state = init_state
+            rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
+            pgts_results[f"LAG_m={m}"] = rewards
+            pgts_policies[f"LAG_m={m}"] = policy
+            model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
+            torch.save(policy.state_dict(), model_path)
+            record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
+
         plot_all(env, pg_rewards, pgts_results)
+        break

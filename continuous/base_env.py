@@ -37,6 +37,18 @@ class BaseMDP(gym.Env):
 
         self.step_count = 0
         return np.array([self.state], dtype=np.float32), {}
+    
+    def get_checkpoint(self):
+        """Returns a copy of the current internal state."""
+        return {
+            'state': float(self.state),
+            'step_count': int(self.step_count)
+        }
+
+    def restore_checkpoint(self, checkpoint):
+        """Restores the internal state from a checkpoint."""
+        self.state = checkpoint['state']
+        self.step_count = checkpoint['step_count']
 
     def reward(self, x):
         raise NotImplementedError
@@ -46,11 +58,23 @@ class BaseMDP(gym.Env):
 
         self.state = self.state + action + np.random.randn() * self.noise
 
-        if self.state < self.state_low or self.state > self.state_high:
-            self.state = np.clip(self.state, self.state_low, self.state_high)
+        if self.state < self.state_low:
+            self.state = self.state_low + (self.state_low - self.state)
+            reward = -5
+        elif self.state > self.state_high:
+            self.state = self.state_high - (self.state - self.state_high)
             reward = -5
         else:
             reward = self.reward(self.state)
+
+        reward = self.reward(self.state)
+
+        #  add smooth boundary penalty (NOT constant)
+        dist_penalty = 0.5 * (
+            max(0, abs(self.state) - (0.8 * self.state_high))
+        )
+
+        reward -= dist_penalty
 
         self.step_count += 1
         done = self.step_count >= self.max_steps
@@ -82,10 +106,13 @@ class BaseMDP(gym.Env):
 
     def rollout(self, policy, max_steps=200):
         states, actions, rewards, log_probs = [], [], [], []
+        checkpoints = []
 
         state, _ = self.reset()
 
         for _ in range(max_steps):
+            checkpoints.append(self.get_checkpoint())
+
             action, log_prob = policy.sample_action(state)
             next_state, reward, done, _, _ = self.step(action)
 
@@ -99,4 +126,4 @@ class BaseMDP(gym.Env):
             if done:
                 break
 
-        return states, actions, rewards, log_probs
+        return states, actions, rewards, log_probs, checkpoints
