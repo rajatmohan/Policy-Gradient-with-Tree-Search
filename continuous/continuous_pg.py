@@ -18,6 +18,8 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
         # states, actions, rewards, dones, log_probs, checkpoints
         states, actions, rewards, dones, log_probs, _ = env.rollout(policy)
 
+        rewards = [r * 0.01 for r in rewards]
+        
         # Convert rewards to numpy for math operations
         rewards_np = np.array(rewards, dtype=np.float32)
 

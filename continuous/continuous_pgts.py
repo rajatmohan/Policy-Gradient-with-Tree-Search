@@ -157,6 +157,7 @@ def run_pgts(
     v_epochs=25,
     K=3,
 ):
+    print(f"Running PGTS with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = None 
 
@@ -223,6 +224,7 @@ def run_pgts_td(
     entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, 
     tau=0.01, v_epochs=1, K=3, search_interval=1 # In TD style, we usually update every step
 ):
+    print(f"Running PGTS-TD with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = copy.deepcopy(policy) if use_lagging else None
 
@@ -281,6 +283,9 @@ def run_pgts_td(
     return rewards_history
 
 def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=200, gamma=0.99, adaptive=False, max_m=20, m=4, entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, tau=0.01, v_epochs=1, K=3):
+    
+    print(f"Running PGTS Online with m={m}, adaptive={adaptive}, lagging={use_lagging}")
+
     rewards_history = []
     lag_policy = copy.deepcopy(policy).eval() if use_lagging else None
     current_m = (1 if adaptive else m)
@@ -288,7 +293,7 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
     for ep in range(episodes):
         if adaptive: current_m = get_adaptive_m(rewards_history, ep, current_m, max_m=max_m)
         state, _ = env.reset()
-        ep_reward = 0
+        total_reward = 0
         done = False
         
         while not done:
@@ -326,9 +331,8 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
                 clip_epsilon
             )
             if use_lagging: update_ema(lag_policy, policy, tau)
-            state, ep_reward = next_state, ep_reward + reward
+            state, total_reward = next_state, total_reward + reward
         
-        total_reward = float(np.sum(ep_reward))
         rewards_history.append(total_reward)
         if ep % 50 == 0:
             print(f"[PGTS-TD] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m}")
@@ -352,6 +356,7 @@ def run_pg_mstep(
     tau=0.01,
     v_epochs=25,
 ):
+    print(f"Running PG-MStep with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = None 
 
@@ -376,7 +381,7 @@ def run_pg_mstep(
             values = value_net(states_t_all)
             
             # This uses your provided compute_m_step_returns logic
-            returns = compute_m_step_returns(rewards, values, gamma, m)
+            returns = compute_m_step_returns(rewards, values, gamma, m, max_m=max_m if adaptive else m)
             returns_t = torch.FloatTensor(returns)
 
         # 5. ADVANTAGE CALCULATION
