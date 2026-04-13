@@ -1,19 +1,11 @@
-import numpy as np
-import gymnasium as gym
-from gymnasium import spaces
-import matplotlib.pyplot as plt
-
-
 class BaseMDP(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     def __init__(self, name="env", state_low=-10, state_high=10, noise=0.02):
         super().__init__()
-
         self.name = name
         self.state = None
         self.init_state = None
-
         self.state_low = state_low
         self.state_high = state_high
         self.noise = noise
@@ -28,7 +20,6 @@ class BaseMDP(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-
         if self.init_state is None:
             self.state = np.random.uniform(-2, 2)
             self.init_state = self.state
@@ -39,14 +30,12 @@ class BaseMDP(gym.Env):
         return np.array([self.state], dtype=np.float32), {}
     
     def get_checkpoint(self):
-        """Returns a copy of the current internal state."""
         return {
             'state': float(self.state),
             'step_count': int(self.step_count)
         }
 
     def restore_checkpoint(self, checkpoint):
-        """Restores the internal state from a checkpoint."""
         self.state = checkpoint['state']
         self.step_count = checkpoint['step_count']
 
@@ -54,58 +43,44 @@ class BaseMDP(gym.Env):
         raise NotImplementedError
 
     def step(self, action):
-        action = np.clip(action, -1, 1)[0]
+        # Support both array and scalar actions
+        a = action[0] if isinstance(action, (np.ndarray, list)) else action
+        a = np.clip(a, -1, 1)
 
-        self.state = self.state + action + np.random.randn() * self.noise
+        self.state = self.state + a + np.random.randn() * self.noise
 
+        # Boundary logic
+        terminated = False
         if self.state < self.state_low:
             self.state = self.state_low + (self.state_low - self.state)
             reward = -5
+            # terminated = True # Uncomment if you want boundary hit to end episode
         elif self.state > self.state_high:
             self.state = self.state_high - (self.state - self.state_high)
             reward = -5
+            # terminated = True # Uncomment if you want boundary hit to end episode
         else:
             reward = self.reward(self.state)
 
-        reward = self.reward(self.state)
-
-        #  add smooth boundary penalty (NOT constant)
-        dist_penalty = 0.5 * (
-            max(0, abs(self.state) - (0.8 * self.state_high))
-        )
-
+        # Smooth boundary penalty
+        dist_penalty = 0.5 * (max(0, abs(self.state) - (0.8 * self.state_high)))
         reward -= dist_penalty
 
         self.step_count += 1
-        done = self.step_count >= self.max_steps
+        
+        # --- THE TRICK: SEPARATE TERMINATION FROM TRUNCATION ---
+        # BaseMDP usually doesn't have a 'death' condition unless you add one above.
+        # But we must check if we hit max_steps.
+        truncated = self.step_count >= self.max_steps
 
-        return np.array([self.state], dtype=np.float32), float(reward), done, False, {}
+        return np.array([self.state], dtype=np.float32), float(reward), terminated, truncated, {}
 
-    def render(self):
-        x = np.linspace(self.state_low, self.state_high, 500)
-        y = self.reward(x)
+    def rollout(self, policy, max_steps=None):
+        if max_steps is None:
+            max_steps = self.max_steps
 
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.plot(x, y)
-
-        ax.scatter(
-            self.state,
-            self.reward(self.state),
-            color="red",
-            s=100
-        )
-
-        ax.set_xlim(self.state_low, self.state_high)
-
-        fig.canvas.draw()
-        img = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
-        plt.close(fig)
-
-        return img
-
-
-    def rollout(self, policy, max_steps=200):
         states, actions, rewards, log_probs = [], [], [], []
+        dones = [] # To track actual physical terminations
         checkpoints = []
 
         state, _ = self.reset()
@@ -114,16 +89,19 @@ class BaseMDP(gym.Env):
             checkpoints.append(self.get_checkpoint())
 
             action, log_prob = policy.sample_action(state)
-            next_state, reward, done, _, _ = self.step(action)
+            
+            # Unpack the 5 variables now returned by step
+            next_state, reward, terminated, truncated, _ = self.step(action)
 
             states.append(state)
             actions.append(action)
             rewards.append(reward)
             log_probs.append(log_prob)
+            dones.append(terminated) # Tree search cares about physical termination
 
             state = next_state
 
-            if done:
+            if terminated or truncated:
                 break
 
-        return states, actions, rewards, log_probs, checkpoints
+        return states, actions, rewards, dones, log_probs, checkpoints

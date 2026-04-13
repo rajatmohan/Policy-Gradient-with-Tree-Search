@@ -64,7 +64,7 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
     return max_q
 
 def compute_strided_Tm_returns(
-    env, policy, value_net, gamma, m, states, rewards, checkpoints, K=3, search_interval=4
+    env, policy, value_net, gamma, m, states, rewards, dones, checkpoints, K=3, search_interval=4
 ):
     """
     Computes the T^m returns for an entire trajectory using a strided backward loop.
@@ -74,8 +74,11 @@ def compute_strided_Tm_returns(
     returns = np.zeros(T, dtype=np.float32)
 
     for i in reversed(range(T)):
+        # FIX 2: Check if the state is terminal. If it is, the return is just the reward.
+        if dones[i]:
+            returns[i] = rewards[i]
         # Condition 1: Anchor points (Last step or falls on the interval)
-        if i == T - 1 or i % search_interval == 0:
+        elif i == T - 1 or i % search_interval == 0:
             env.restore_checkpoint(checkpoints[i])
             env.state = states[i]
             returns[i] = compute_Tm_value(env, policy, value_net, gamma, m, K=K)
@@ -109,9 +112,7 @@ def run_pgts(
     K=3,
 ):
     rewards_history = []
-
     mse = nn.MSELoss()
-
     lag_policy = None 
 
     if use_lagging:
@@ -134,11 +135,11 @@ def run_pgts(
         else:
             rollout_policy = policy
         
-        states, actions, rewards, log_probs, checkpoints = env.rollout(rollout_policy)
-
+        # NOTE: Ensure your env.rollout returns a `dones` array/list
+        states, actions, rewards, dones, log_probs, checkpoints = env.rollout(rollout_policy)
         
         returns = compute_strided_Tm_returns(
-            env, policy, value_net, gamma, current_m, states, rewards, checkpoints, 
+            env, policy, value_net, gamma, current_m, states, rewards, dones, checkpoints, 
             K=K, search_interval=4
         )
 
@@ -146,6 +147,15 @@ def run_pgts(
         states_t = torch.FloatTensor(np.array(states))
         actions_t = torch.FloatTensor(np.array(actions)) 
 
+        # FIX 1: Calculate advantages BEFORE modifying the value network
+        with torch.no_grad():
+            old_values = value_net(states_t).squeeze()
+            advantages = returns_t - old_values
+            # Standardize advantages (ensure there is more than 1 item to avoid NaN)
+            if advantages.shape[0] > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # NOW train the value network
         for _ in range(v_epochs):
             optimizer_v.zero_grad()
             current_values = value_net(states_t).squeeze()
@@ -153,18 +163,13 @@ def run_pgts(
             v_loss.backward()
             torch.nn.utils.clip_grad_norm_(value_net.parameters(), 1.0)
             optimizer_v.step()
-        
-        with torch.no_grad():
-            fresh_values = value_net(states_t).squeeze()
-            advantages = returns_t - fresh_values
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        # Proceed with Policy update
         mean, std = policy(states_t)
         dist = torch.distributions.Normal(mean, std)
         new_log_probs = dist.log_prob(actions_t).sum(dim=-1)
 
         rewards = np.array(rewards, dtype=np.float32)
-        # rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
         if use_lagging:
             log_probs_t = torch.stack(log_probs).detach()

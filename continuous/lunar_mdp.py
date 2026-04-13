@@ -63,11 +63,11 @@ class LunarMDP:
     def step(self, action):
         action = np.clip(action, -1, 1)
 
-        next_state, reward, done, truncated, info = self.env.step(action)
+        next_state, reward, terminated, truncated, info = self.env.step(action)
 
         self.state = next_state
 
-        return next_state, float(reward), done or truncated, False, info
+        return next_state, float(reward), terminated, truncated, info
 
     def render(self):
         return self.env.render()
@@ -80,8 +80,9 @@ class LunarMDP:
         actions = []
         rewards = []
         log_probs = []
+        dones = []
 
-        checkpoints = [] # Store physics states here
+        checkpoints = []
 
         state, _ = self.reset()
 
@@ -89,19 +90,21 @@ class LunarMDP:
             checkpoints.append(self.get_checkpoint())
             action, log_prob = policy.sample_action(state)
 
-            next_state, reward, done, _, _ = self.step(action)
+            next_state, reward, terminated, truncated, info = self.step(action)
 
             states.append(state)
             actions.append(action)
             rewards.append(reward)
             log_probs.append(log_prob)
 
+            dones.append(terminated)
+
             state = next_state
 
-            if done:
+            if terminated or truncated:
                 break
         
-        return states, actions, rewards, log_probs, checkpoints
+        return states, actions, rewards, dones, log_probs, checkpoints
 
     def close(self):
         self.env.close()
