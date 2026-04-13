@@ -5,15 +5,16 @@ import os
 from continuous.continous_policy import Policy
 from continuous.continuous_value import Value
 from continuous.continuous_pg import run_pg
-from continuous.continuous_pgts import run_pgts
+from continuous.continuous_pgts import run_pgts, run_pgts_online
 from continuous.continuous_pgts import run_pgts_td
+from continuous.continuous_pgts import run_pg_mstep
 from gymnasium.wrappers import RecordVideo
 from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
 
 SEEDS = [60]
-EPISODES = 1000
+EPISODES = 500
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -46,7 +47,7 @@ def run_single(method, seed, env, m = 10):
         rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES)
 
     elif method == "PGTS":        
-        rewards = run_pgts_td(
+        rewards = run_pgts_online(
             env,
             policy,
             value_net,
@@ -59,7 +60,7 @@ def run_single(method, seed, env, m = 10):
         )
     
     elif method == "PGTS_WITH_LAGGING":
-        rewards = run_pgts(
+        rewards = run_pgts_online(
             env,
             policy,
             value_net,
@@ -158,10 +159,10 @@ if __name__ == "__main__":
         env.reset()
         init_state = env.state
 
-        # env.init_state = init_state
-        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        env.init_state = init_state
+        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}
