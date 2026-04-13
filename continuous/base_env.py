@@ -6,7 +6,7 @@ import gymnasium as gym
 class BaseMDP(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
-    def __init__(self, name="env", state_low=-10, state_high=10, noise=0.02):
+    def __init__(self, name="env", state_low=-10, state_high=10, noise=0.02, seed=0):
         super().__init__()
         self.name = name
         self.state = None
@@ -14,6 +14,7 @@ class BaseMDP(gym.Env):
         self.state_low = state_low
         self.state_high = state_high
         self.noise = noise
+        self.seed = seed
 
         self.observation_space = spaces.Box(
             low=state_low, high=state_high, shape=(1,), dtype=np.float32

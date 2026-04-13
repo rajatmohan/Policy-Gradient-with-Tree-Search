@@ -34,7 +34,8 @@ class Policy(nn.Module):
         x = self.net(state)
         mean = self.mean(x)
         std = torch.exp(self.log_std)
-        std = torch.clamp(std, 0.01, 1.0)
+        std = torch.clamp(std, 0.1, 1.0)
+        # std = torch.clamp(std, 0.01, 1.0)
         return mean, std
 
     def sample_action(self, state):

@@ -108,7 +108,7 @@ def run_pgts(
     use_lagging=False,
     clip_epsilon=0.2,
     tau=0.01,
-    v_epochs=20,
+    v_epochs=25,
     K=3,
 ):
     rewards_history = []
@@ -138,6 +138,8 @@ def run_pgts(
         # NOTE: Ensure your env.rollout returns a `dones` array/list
         states, actions, rewards, dones, log_probs, checkpoints = env.rollout(rollout_policy)
         
+        rewards = [r * 0.01 for r in rewards]
+
         returns = compute_strided_Tm_returns(
             env, policy, value_net, gamma, current_m, states, rewards, dones, checkpoints, 
             K=K, search_interval=4
@@ -152,16 +154,20 @@ def run_pgts(
             old_values = value_net(states_t).squeeze()
             advantages = returns_t - old_values
             # Standardize advantages (ensure there is more than 1 item to avoid NaN)
-            if advantages.shape[0] > 1:
+            if advantages.numel() > 1:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # NOW train the value network
         for _ in range(v_epochs):
             optimizer_v.zero_grad()
             current_values = value_net(states_t).squeeze()
-            v_loss = mse(current_values, returns_t)
+            
+            # Use Huber Loss instead of MSE
+            v_loss = torch.nn.functional.huber_loss(current_values, returns_t, delta=1.0)
+            
             v_loss.backward()
-            torch.nn.utils.clip_grad_norm_(value_net.parameters(), 1.0)
+            # Clip Critic gradients to 0.5 to prevent "spikes"
+            torch.nn.utils.clip_grad_norm_(value_net.parameters(), 0.5)
             optimizer_v.step()
 
         # Proceed with Policy update
@@ -198,4 +204,144 @@ def run_pgts(
         if ep % 50 == 0 or ep == 0 or ep == episodes - 1:
             print(f"[PGTS] Ep {ep:4d} | Reward: {total_reward:8.6f}")
 
+    return rewards_history
+
+def run_pgts_td(
+    env, policy, value_net, optimizer_p, optimizer_v,
+    episodes=200, gamma=0.99, adaptive=False, max_m=20, m=4,
+    entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, 
+    tau=0.01, v_epochs=1, K=3, search_interval=1 # In TD style, we usually update every step
+):
+    rewards_history = []
+    lag_policy = copy.deepcopy(policy) if use_lagging else None
+
+    current_m = (1 if adaptive else m)
+
+    for ep in range(episodes):
+        if adaptive:
+            current_m = get_adaptive_m(rewards_history, ep, current_m, max_m=max_m, min_m=1)
+        
+        rollout_policy = lag_policy if (use_lagging and ep > 20) else policy
+        
+        # 1. ROLLOUT: Still collect the trajectory first for efficiency
+        states, actions, rewards, dones, log_probs, checkpoints = env.rollout(rollout_policy)
+        rewards = [r * 0.01 for r in rewards] # Scale rewards
+
+        # 2. TD-STYLE TARGET COMPUTATION
+        # Instead of bootstrapping backward, we treat each state as a TD-target source
+        td_targets = []
+        for i in range(len(states)):
+            if dones[i]:
+                td_targets.append(rewards[i])
+            else:
+                # TD(0) logic: Target = Tree Search Lookahead from current state
+                env.restore_checkpoint(checkpoints[i])
+                env.state = states[i]
+                target_val = compute_Tm_value(env, policy, value_net, gamma, current_m, K=K)
+                td_targets.append(target_val)
+
+        # 3. PREPARE TENSORS
+        returns_t = torch.FloatTensor(td_targets)
+        states_t = torch.FloatTensor(np.array(states))
+        actions_t = torch.FloatTensor(np.array(actions))
+
+        # 4. ADVANTAGE CALCULATION (On-policy TD-error)
+        with torch.no_grad():
+            values = value_net(states_t).squeeze()
+            advantages = returns_t - values # A(s) = T^m V(s) - V(s)
+            if advantages.numel() > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # 5. VALUE UPDATE (Critic)
+        # In TD style, we often do fewer epochs or use a smaller buffer
+        for _ in range(v_epochs):
+            optimizer_v.zero_grad()
+            current_values = value_net(states_t).squeeze()
+            v_loss = torch.nn.functional.huber_loss(current_values, returns_t, delta=1.0)
+            v_loss.backward()
+            torch.nn.utils.clip_grad_norm_(value_net.parameters(), 0.5)
+            optimizer_v.step()
+
+        # 6. POLICY UPDATE (Actor)
+        mean, std = policy(states_t)
+        dist = torch.distributions.Normal(mean, std)
+        new_log_probs = dist.log_prob(actions_t).sum(dim=-1)
+
+        if use_lagging:
+            log_probs_t = torch.stack(log_probs).detach()
+            ratios = torch.exp(new_log_probs - log_probs_t)
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
+            policy_loss = -torch.min(surr1, surr2).mean()
+        else:
+            policy_loss = -(advantages * new_log_probs).mean()
+
+        policy_loss -= entropy_coef * dist.entropy().mean()
+
+        optimizer_p.zero_grad()
+        policy_loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+        optimizer_p.step()
+
+        if use_lagging:
+            update_ema(lag_policy, policy, tau=tau)
+
+        total_reward = float(np.sum(rewards))
+        rewards_history.append(total_reward)
+
+        if ep % 50 == 0:
+            print(f"[PGTS-TD] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m}")
+
+    return rewards_history
+
+def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=200, gamma=0.99, m=4, K=3):
+    rewards_history = []
+    
+    for ep in range(episodes):
+        state, _ = env.reset()
+        total_reward = 0
+        done = False
+        
+        while not done:
+            # 1. Get current checkpoint for Tree Search
+            checkpoint = env.get_checkpoint()
+            
+            # 2. Sample Action from Policy
+            action, log_prob = policy.sample_action(state)
+            
+            # 3. COMPUTE T^m TARGET (The "Theory" Part)
+            # We run the tree search RIGHT NOW for this specific state
+            env.restore_checkpoint(checkpoint)
+            target_v = compute_Tm_value(env, policy, value_net, gamma, m, K=K)
+            
+            # 4. STEP THE ENVIRONMENT
+            env.restore_checkpoint(checkpoint) # Ensure we start from correct physics state
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            scaled_reward = reward * 0.01
+            
+            # 5. IMMEDIATE UPDATE (Actor-Critic TD Logic)
+            # Calculate Advantage: A = Target_from_Search - Current_Value
+            state_t = torch.FloatTensor(state).unsqueeze(0)
+            current_v = value_net(state_t)
+            advantage = target_v - current_v.item()
+            
+            # --- UPDATE VALUE NET ---
+            optimizer_v.zero_grad()
+            v_loss = torch.nn.functional.huber_loss(current_v, torch.tensor([target_v]))
+            v_loss.backward()
+            optimizer_v.step()
+            
+            # --- UPDATE POLICY ---
+            optimizer_p.zero_grad()
+            # Standard Policy Gradient: grad = -log_prob * advantage
+            policy_loss = -(log_prob * advantage)
+            policy_loss.backward()
+            optimizer_p.step()
+            
+            # 6. Move to next state
+            state = next_state
+            total_reward += reward
+            
+        rewards_history.append(total_reward)
     return rewards_history

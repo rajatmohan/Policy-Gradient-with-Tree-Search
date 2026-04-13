@@ -6,6 +6,7 @@ from continuous.continous_policy import Policy
 from continuous.continuous_value import Value
 from continuous.continuous_pg import run_pg
 from continuous.continuous_pgts import run_pgts
+from continuous.continuous_pgts import run_pgts_td
 from gymnasium.wrappers import RecordVideo
 from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
@@ -28,6 +29,7 @@ def get_envs():
 def run_single(method, seed, env, m = 10):
     np.random.seed(seed)
     torch.manual_seed(seed)
+    env.seed = seed
 
     state_dim = 8 if env.name == "LUNAR_MDP" else 1
     action_dim = 2 if env.name == "LUNAR_MDP" else 1
@@ -44,7 +46,7 @@ def run_single(method, seed, env, m = 10):
         rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES)
 
     elif method == "PGTS":        
-        rewards = run_pgts(
+        rewards = run_pgts_td(
             env,
             policy,
             value_net,
@@ -151,7 +153,7 @@ def record_agent(env, model_path, tag):
 if __name__ == "__main__":
     envs = get_envs()
     # M_VALUES = [1, 5, 10]
-    M_VALUES = [5, -1, 10]
+    M_VALUES = [2, 3, 5, -1]
     for env in envs:
         env.reset()
         init_state = env.state
