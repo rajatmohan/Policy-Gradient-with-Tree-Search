@@ -104,11 +104,11 @@ def run_pgts(
     adaptive=False, 
     max_m=20,
     m=4,
-    entropy_coef=0.05,
+    entropy_coef=0.1,
     use_lagging=False,
     clip_epsilon=0.2,
     tau=0.01,
-    v_epochs=10,
+    v_epochs=20,
     K=3,
 ):
     rewards_history = []

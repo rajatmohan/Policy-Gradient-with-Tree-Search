@@ -29,30 +29,21 @@ def run_single(method, seed, env, m = 10):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env.reset()
-    init_state = env.state
+    state_dim = 8 if env.name == "LUNAR_MDP" else 1
+    action_dim = 2 if env.name == "LUNAR_MDP" else 1
 
-    if env.name == "LUNAR_MDP":
-        policy = Policy(8, 2)  # LunarLanderContinuous has 8D state and 2D action
-        value_net = Value(8)
-    else:
-        policy = Policy(1, 1)
-        value_net = Value(1)
+    policy = Policy(state_dim, action_dim)
+    value_net = Value(state_dim)
     
-    optimizer_p = torch.optim.Adam(policy.parameters(), lr=1e-4)        
+    optimizer_p = torch.optim.Adam(policy.parameters(), lr=5e-5)        
     optimizer_v = torch.optim.Adam(value_net.parameters(), lr=1e-3)
 
-    env.init_state = init_state
+    env.reset()
 
     if method == "PG":
         rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES)
 
-    elif method == "PGTS":
-        if env.name == "LUNAR_MDP":
-            value_net = Value(8)
-        else:
-            value_net = Value(1)
-        
+    elif method == "PGTS":        
         rewards = run_pgts(
             env,
             policy,
@@ -74,7 +65,8 @@ def run_single(method, seed, env, m = 10):
             optimizer_v,
             m=m,
             episodes=EPISODES,
-            adaptive=True, 
+            adaptive=(m == -1),
+            max_m = m if m != -1 else 20,
             use_lagging=True,
             clip_epsilon=0.2,
             tau = 0.01
@@ -155,7 +147,6 @@ def record_agent(env, model_path, tag):
 
     finally:
         video_env.close()
-
 
 if __name__ == "__main__":
     envs = get_envs()
