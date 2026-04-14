@@ -13,8 +13,13 @@ from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
 
+<<<<<<< Updated upstream
 SEEDS = [60]
 EPISODES = 500
+=======
+SEEDS = [66]
+EPISODES = 50
+>>>>>>> Stashed changes
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -22,9 +27,9 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 def get_envs():
     lunar = LunarMDP()
     return [
-        # TwoPeakMDP(),
+        TwoPeakMDP(),
         # ThreePeakMDP(),
-        lunar
+        # lunar
     ]
 
 def run_single(method, seed, env, m = 10):
