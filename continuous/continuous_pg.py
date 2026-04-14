@@ -10,7 +10,7 @@ def compute_returns(rewards, gamma):
         returns.insert(0, G)
     return returns
 
-def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
+def run_pg(env, policy, optimizer, episodes=200, gamma=0.99, device='cpu'):
     rewards_history = []
 
     for ep in range(episodes):
@@ -25,7 +25,7 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
 
         # Calculate Monte Carlo returns
         returns = compute_returns(rewards_np, gamma)
-        returns = torch.FloatTensor(returns)
+        returns = torch.FloatTensor(returns).to(device)
 
         # Stack log probabilities collected during rollout
         log_probs_t = torch.stack(log_probs)

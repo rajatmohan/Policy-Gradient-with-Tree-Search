@@ -3,6 +3,9 @@ import torch
 import matplotlib.pyplot as plt
 import os
 from continuous.continous_policy import Policy
+
+# GPU device setup
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from continuous.continuous_value import Value
 from continuous.continuous_pg import run_pg
 from continuous.continuous_pgts import run_pgts, run_pgts_online
@@ -13,8 +16,8 @@ from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
 
-SEEDS = [60]
-EPISODES = 500
+SEEDS = [66]
+EPISODES = 2000
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -35,19 +38,25 @@ def run_single(method, seed, env, m = 10):
     state_dim = 8 if env.name == "LUNAR_MDP" else 1
     action_dim = 2 if env.name == "LUNAR_MDP" else 1
 
-    policy = Policy(state_dim, action_dim)
-    value_net = Value(state_dim)
+    policy = Policy(state_dim, action_dim).to(DEVICE)
+    value_net = Value(state_dim).to(DEVICE)
     
     optimizer_p = torch.optim.Adam(policy.parameters(), lr=5e-5)        
     optimizer_v = torch.optim.Adam(value_net.parameters(), lr=1e-3)
 
+    # Define the linear decay lambda: 1.0 at start, 0.0 at end
+    lr_lambda = lambda epoch: 1.0 - (epoch / EPISODES)
+
+    scheduler_p = torch.optim.lr_scheduler.LambdaLR(optimizer_p, lr_lambda=lr_lambda)
+    scheduler_v = torch.optim.lr_scheduler.LambdaLR(optimizer_v, lr_lambda=lr_lambda)
+
     env.reset()
 
     if method == "PG":
-        rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES)
+        rewards = run_pg(env, policy, optimizer_p, episodes=EPISODES, device=DEVICE)
 
     elif method == "PGTS":        
-        rewards = run_pgts_online(
+        rewards = run_pgts_td(
             env,
             policy,
             value_net,
@@ -56,11 +65,14 @@ def run_single(method, seed, env, m = 10):
             episodes=EPISODES,
             adaptive=(m == -1),
             max_m = m if m != -1 else 20,
-            m=m
+            m=m,
+            device=DEVICE,
+            scheduler_p=scheduler_p,
+            scheduler_v=scheduler_v,
         )
     
     elif method == "PGTS_WITH_LAGGING":
-        rewards = run_pgts_online(
+        rewards = run_pgts_td(
             env,
             policy,
             value_net,
@@ -72,7 +84,10 @@ def run_single(method, seed, env, m = 10):
             max_m = m if m != -1 else 20,
             use_lagging=True,
             clip_epsilon=0.2,
-            tau = 0.01
+            tau = 0.01,
+            device=DEVICE,
+            scheduler_p=scheduler_p, # <--- Pass here
+            scheduler_v=scheduler_v,
         )
 
     final_state = env.state
@@ -132,8 +147,8 @@ def record_agent(env, model_path, tag):
         base_env = env
         action_dim = env.action_space.shape[0]
 
-    policy = Policy(state_dim, action_dim)
-    policy.load_state_dict(torch.load(model_path))
+    policy = Policy(state_dim, action_dim).to(DEVICE)
+    policy.load_state_dict(torch.load(model_path, map_location=DEVICE))
     policy.eval()
 
     video_env = RecordVideo(base_env, video_dir, episode_trigger=lambda e: True)
@@ -154,15 +169,15 @@ def record_agent(env, model_path, tag):
 if __name__ == "__main__":
     envs = get_envs()
     # M_VALUES = [1, 5, 10]
-    M_VALUES = [2, 3, 5, -1]
+    M_VALUES = [1, 2, 3, 5, 10, -1]
     for env in envs:
         env.reset()
         init_state = env.state
 
-        env.init_state = init_state
-        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        # env.init_state = init_state
+        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}
@@ -177,15 +192,14 @@ if __name__ == "__main__":
             torch.save(policy.state_dict(), model_path)
             record_agent(env, model_path, f"{env.name}_PGTS_m{m}")
 
-            # PGTS with lagging
-            print(f"\nRunning PGTS LAG m={m} | {env.name}")
-            env.init_state = init_state
-            rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
-            pgts_results[f"LAG_m={m}"] = rewards
-            pgts_policies[f"LAG_m={m}"] = policy
-            model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
-            torch.save(policy.state_dict(), model_path)
-            record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
+            # # PGTS with lagging
+            # print(f"\nRunning PGTS LAG m={m} | {env.name}")
+            # env.init_state = init_state
+            # rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
+            # pgts_results[f"LAG_m={m}"] = rewards
+            # pgts_policies[f"LAG_m={m}"] = policy
+            # model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
+            # torch.save(policy.state_dict(), model_path)
+            # record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
 
         plot_all(env, pg_rewards, pgts_results)
-        break
