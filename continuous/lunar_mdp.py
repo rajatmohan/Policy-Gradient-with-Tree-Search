@@ -9,21 +9,27 @@ class LunarMDP:
         self.name = "LUNAR_MDP"
 
         self.state = None
-        self.init_state = None
         self.seed = seed
+        self._pending_reset_seed = seed
 
         self.max_steps = 1000
 
-    def reset(self):
-        state, _ = self.env.reset(seed=self.seed)
+    def set_seed(self, seed):
+        self.seed = seed
+        self._pending_reset_seed = seed
 
-        if self.init_state is None:
-            self.init_state = state.copy()
+    def reset(self, seed=None):
+        if seed is not None:
+            reset_seed = seed
+        elif self._pending_reset_seed is not None:
+            reset_seed = self._pending_reset_seed
+            self._pending_reset_seed = None
         else:
-            state = self.init_state.copy()
+            reset_seed = None
 
-        self.state = state
-        return state, {}
+        state, _ = self.env.reset(seed=reset_seed)
+        self.state = state.copy()
+        return self.state, {}
     
     def get_checkpoint(self):
         lander = self.env.unwrapped.lander

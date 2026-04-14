@@ -48,4 +48,4 @@ class Policy(nn.Module):
         action = dist.sample()
         log_prob = dist.log_prob(action).sum()
 
-        return action.detach().numpy()[0], log_prob
+        return action.detach().cpu().tolist()[0], log_prob

@@ -5,6 +5,11 @@ import copy
 
 from common.adaptive_m import get_adaptive_m
 from continuous import lunar_mdp
+from training_utils import (
+    DynamicLearningRateScheduler, AdaptiveRewardScaler, 
+    AdaptiveEntropyScheduler, GradientMonitor, adaptive_value_epochs,
+    compute_return_statistics
+)
 
 def compute_m_step_returns(rewards, values, gamma, m):
     T = len(rewards)
@@ -44,6 +49,7 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
         mdp.state = current_state
         
         action, _ = policy.sample_action(mdp.state)
+        action = np.asarray(action, dtype=np.float32)
         action += np.random.normal(0, 0.1, size=action.shape)
         action = np.clip(action, -1, 1)
         
@@ -101,8 +107,20 @@ def train_value_network(optimizer_v, value_net, states_t, targets_t, v_epochs=25
         targets_flat = targets_t.view(-1)
         v_loss = torch.nn.functional.huber_loss(current_values, targets_flat, delta=1.0)
         v_loss.backward()
+        # Increased gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(value_net.parameters(), 0.5)
-        optimizer_v.step()
+        
+        # Check for NaN before step
+        valid = True
+        for param in value_net.parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                valid = False
+                break
+        
+        if valid:
+            optimizer_v.step()
+        else:
+            print("[WARNING] NaN gradient in value network, skipping update")
 
 def train_policy_network(
     optimizer_p, policy, states_t, actions_t, advantages, 
@@ -139,6 +157,65 @@ def get_advantages(returns_t, values_t):
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     return advantages
 
+def should_early_stop(
+    rewards_history,
+    min_episodes=300,
+    check_every=50,
+    window=100,
+    plateau_delta=10.0,
+    max_bad_checks=4,
+    bad_check_count=0,
+):
+    """Return (stop_flag, updated_bad_check_count) using rolling-mean degradation checks."""
+    n = len(rewards_history)
+    required = max(min_episodes, 2 * window)
+
+    if n < required or (n % check_every) != 0:
+        return False, bad_check_count
+
+    prev_mean = float(np.mean(rewards_history[-2 * window:-window]))
+    curr_mean = float(np.mean(rewards_history[-window:]))
+    improvement = curr_mean - prev_mean
+
+    if improvement < -abs(plateau_delta):
+        bad_check_count += 1
+    else:
+        bad_check_count = 0
+
+    return bad_check_count >= max_bad_checks, bad_check_count
+
+def evaluate_policy_mean(env, policy, episodes=5, deterministic=True):
+    """Evaluate current policy on raw env rewards and return mean episodic return."""
+    was_training = policy.training
+    policy.eval()
+    returns = []
+
+    try:
+        for _ in range(episodes):
+            state, _ = env.reset()
+            done = False
+            total_reward = 0.0
+
+            while not done:
+                if deterministic:
+                    with torch.no_grad():
+                        state_t = torch.FloatTensor(state).unsqueeze(0)
+                        mean, _ = policy(state_t)
+                        action = mean.squeeze(0).cpu().tolist()
+                else:
+                    action, _ = policy.sample_action(state)
+
+                state, reward, terminated, truncated, _ = env.step(action)
+                total_reward += float(reward)
+                done = terminated or truncated
+
+            returns.append(total_reward)
+    finally:
+        if was_training:
+            policy.train()
+
+    return float(np.mean(returns)) if len(returns) > 0 else -float("inf")
+
 def run_pgts(
     env,
     policy,
@@ -155,11 +232,34 @@ def run_pgts(
     clip_epsilon=0.2,
     tau=0.01,
     v_epochs=25,
+    critic_warmup_episodes=300,
+    critic_warmup_multiplier=2.0,
     K=3,
+    eval_interval=100,
+    eval_episodes=5,
+    eval_deterministic=True,
+    early_stop=False,
+    early_stop_min_episodes=400,
+    early_stop_check_every=50,
+    early_stop_window=100,
+    early_stop_delta=10.0,
+    early_stop_patience=4,
 ):
     print(f"Running PGTS with m={m}, adaptive={adaptive}, lagging={use_lagging}")
+    
+    # Initialize adaptive components
+    lr_scheduler = DynamicLearningRateScheduler(
+        initial_lr_policy=5e-5, 
+        initial_lr_value=1e-3
+    )
+    reward_scaler = AdaptiveRewardScaler(init_scale=0.01)
+    entropy_scheduler = AdaptiveEntropyScheduler(initial_entropy_coef=entropy_coef, total_episodes=episodes)
+    
     rewards_history = []
     lag_policy = None 
+    bad_check_count = 0
+    best_eval_mean = -float("inf")
+    best_policy_state = copy.deepcopy(policy.state_dict())
 
     if use_lagging:
         lag_policy = copy.deepcopy(policy)
@@ -176,6 +276,10 @@ def run_pgts(
                 max_m=max_m, 
                 min_m=1
             )
+        
+        # Get adaptive entropy coefficient
+        current_entropy_coef = entropy_scheduler.get_entropy_coef(ep)
+        
         if use_lagging and ep > 20:
             rollout_policy = lag_policy
         else:
@@ -184,10 +288,12 @@ def run_pgts(
         # NOTE: Ensure your env.rollout returns a `dones` array/list
         states, actions, rewards, dones, log_probs, checkpoints = env.rollout(rollout_policy)
         
-        rewards = [r * 0.01 for r in rewards]
+        # Use adaptive reward scaling
+        scaled_rewards = [r * reward_scaler.get_scale() for r in rewards]
+        reward_scaler.update_scale(scaled_rewards)
 
         returns = compute_strided_Tm_returns(
-            env, policy, value_net, gamma, current_m, states, rewards, dones, checkpoints, 
+            env, policy, value_net, gamma, current_m, states, scaled_rewards, dones, checkpoints, 
             K=K, search_interval=4
         )
 
@@ -199,22 +305,65 @@ def run_pgts(
         with torch.no_grad():
             advantages = get_advantages(returns_t, value_net(states_t).squeeze())
 
-        train_value_network(optimizer_v, value_net, states_t, returns_t, v_epochs=v_epochs)
+        # Adaptive value epochs
+        v_epochs_current = adaptive_value_epochs(
+            ep,
+            episodes,
+            base_epochs=v_epochs,
+            warmup_episodes=critic_warmup_episodes,
+            warmup_multiplier=critic_warmup_multiplier,
+        )
+        train_value_network(optimizer_v, value_net, states_t, returns_t, v_epochs=v_epochs_current)
 
         # Proceed with Policy update
         old_probs = torch.stack(log_probs).detach() if use_lagging else None
         train_policy_network(optimizer_p, policy, states_t, actions_t, advantages, 
-                            entropy_coef = entropy_coef, log_probs_old = old_probs, clip_epsilon = clip_epsilon)
+                            entropy_coef=current_entropy_coef, log_probs_old=old_probs, clip_epsilon=clip_epsilon)
 
         if use_lagging:
             update_ema(lag_policy, policy, tau=tau)
 
-        rewards = np.array(rewards, dtype=np.float32)
-        total_reward = float(np.sum(rewards))
+        total_reward = float(np.sum(scaled_rewards))
         rewards_history.append(total_reward)
+        
+        # Update learning rates based on performance
+        if len(rewards_history) >= 2:
+            avg_reward = np.mean(rewards_history[-5:]) if len(rewards_history) >= 5 else np.mean(rewards_history)
+            lr_policy, lr_value = lr_scheduler.get_learning_rates(ep, avg_reward)
+            lr_scheduler.update_optimizer_lr(optimizer_p, optimizer_v, lr_policy, lr_value)
 
         if ep % 50 == 0:
-            print(f"[PGTS-TD] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m}")
+            print(f"[PGTS] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m} | "
+                  f"Entropy: {current_entropy_coef:.3f} | Scale: {reward_scaler.get_scale():.4f} | "
+                  f"V-Epochs: {v_epochs_current}")
+
+        if eval_interval > 0 and (ep + 1) % eval_interval == 0:
+            eval_mean = evaluate_policy_mean(env, policy, episodes=eval_episodes, deterministic=eval_deterministic)
+            if eval_mean > best_eval_mean:
+                best_eval_mean = eval_mean
+                best_policy_state = copy.deepcopy(policy.state_dict())
+            print(f"[PGTS][Eval] Ep {ep:4d} | mean_return: {eval_mean:8.3f} | best: {best_eval_mean:8.3f}")
+
+        if early_stop:
+            stop, bad_check_count = should_early_stop(
+                rewards_history,
+                min_episodes=early_stop_min_episodes,
+                check_every=early_stop_check_every,
+                window=early_stop_window,
+                plateau_delta=early_stop_delta,
+                max_bad_checks=early_stop_patience,
+                bad_check_count=bad_check_count,
+            )
+            if stop:
+                print(
+                    f"[PGTS] Early stop at ep {ep} | "
+                    f"No sustained improvement over recent windows."
+                )
+                break
+
+    if best_policy_state is not None:
+        policy.load_state_dict(best_policy_state)
+        print(f"[PGTS] Loaded best checkpoint by eval mean: {best_eval_mean:.3f}")
 
     return rewards_history
 
@@ -222,11 +371,25 @@ def run_pgts_td(
     env, policy, value_net, optimizer_p, optimizer_v,
     episodes=200, gamma=0.99, adaptive=False, max_m=20, m=4,
     entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, 
-    tau=0.01, v_epochs=1, K=3, search_interval=1 # In TD style, we usually update every step
+    tau=0.01, v_epochs=4, critic_warmup_episodes=300, critic_warmup_multiplier=2.0,
+    K=3, search_interval=1,
+    eval_interval=100,
+    eval_episodes=5,
+    eval_deterministic=True,
+    early_stop=False,
+    early_stop_min_episodes=400,
+    early_stop_check_every=50,
+    early_stop_window=100,
+    early_stop_delta=10.0,
+    early_stop_patience=4,
 ):
     print(f"Running PGTS-TD with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = copy.deepcopy(policy) if use_lagging else None
+    reward_scaler = AdaptiveRewardScaler(init_scale=0.01)
+    bad_check_count = 0
+    best_eval_mean = -float("inf")
+    best_policy_state = copy.deepcopy(policy.state_dict())
 
     current_m = (1 if adaptive else m)
 
@@ -238,20 +401,23 @@ def run_pgts_td(
         
         # 1. ROLLOUT: Still collect the trajectory first for efficiency
         states, actions, rewards, dones, log_probs, checkpoints = env.rollout(rollout_policy)
-        rewards = [r * 0.01 for r in rewards] # Scale rewards
+        raw_rewards = np.array(rewards, dtype=np.float32)
+        reward_scaler.update_scale(raw_rewards)
+        current_scale = reward_scaler.get_scale()
+        scaled_rewards = [r * current_scale for r in raw_rewards]
 
         # 2. TD-STYLE TARGET COMPUTATION
         # Instead of bootstrapping backward, we treat each state as a TD-target source
         td_targets = []
         for i in range(len(states)):
             if dones[i]:
-                td_targets.append(rewards[i])
+                td_targets.append(scaled_rewards[i])
             else:
                 # TD(0) logic: Target = Tree Search Lookahead from current state
                 env.restore_checkpoint(checkpoints[i])
                 env.state = states[i]
                 target_val = compute_Tm_value(env, policy, value_net, gamma, current_m, K=K)
-                td_targets.append(target_val)
+                td_targets.append(current_scale * target_val)
 
         # 3. PREPARE TENSORS
         returns_t = torch.FloatTensor(td_targets)
@@ -262,9 +428,16 @@ def run_pgts_td(
         with torch.no_grad():
             advantages = get_advantages(returns_t, value_net(states_t).squeeze())
 
-        # 5. VALUE UPDATE (Critic)
-        # In TD style, we often do fewer epochs or use a smaller buffer
-        train_value_network(optimizer_v, value_net, states_t, returns_t, v_epochs = 4)
+        # 5. VALUE UPDATE (Critic) with early warmup so critic can get ahead
+        v_epochs_current = adaptive_value_epochs(
+            ep,
+            episodes,
+            base_epochs=v_epochs,
+            warmup_episodes=critic_warmup_episodes,
+            warmup_multiplier=critic_warmup_multiplier,
+            min_epochs=2,
+        )
+        train_value_network(optimizer_v, value_net, states_t, returns_t, v_epochs=v_epochs_current)
 
         # 6. POLICY UPDATE (Actor)
         old_probs = torch.stack(log_probs).detach() if use_lagging else None
@@ -274,26 +447,74 @@ def run_pgts_td(
         if use_lagging:
             update_ema(lag_policy, policy, tau=tau)
 
-        total_reward = float(np.sum(rewards))
-        rewards_history.append(total_reward)
+        raw_total_reward = float(np.sum(raw_rewards))
+        scaled_total_reward = float(np.sum(scaled_rewards))
+        rewards_history.append(raw_total_reward)
 
         if ep % 50 == 0:
-            print(f"[PGTS-TD] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m}")
+            print(f"[PGTS-TD] Ep {ep:4d} | Raw: {raw_total_reward:8.6f} | Scaled: {scaled_total_reward:8.6f} | "
+                  f"m: {current_m} | Scale: {current_scale:.4f} | V-Epochs: {v_epochs_current}")
+
+        if eval_interval > 0 and (ep + 1) % eval_interval == 0:
+            eval_mean = evaluate_policy_mean(env, policy, episodes=eval_episodes, deterministic=eval_deterministic)
+            if eval_mean > best_eval_mean:
+                best_eval_mean = eval_mean
+                best_policy_state = copy.deepcopy(policy.state_dict())
+            print(f"[PGTS-TD][Eval] Ep {ep:4d} | mean_return: {eval_mean:8.3f} | best: {best_eval_mean:8.3f}")
+
+        if early_stop:
+            stop, bad_check_count = should_early_stop(
+                rewards_history,
+                min_episodes=early_stop_min_episodes,
+                check_every=early_stop_check_every,
+                window=early_stop_window,
+                plateau_delta=early_stop_delta,
+                max_bad_checks=early_stop_patience,
+                bad_check_count=bad_check_count,
+            )
+            if stop:
+                print(
+                    f"[PGTS-TD] Early stop at ep {ep} | "
+                    f"No sustained improvement over recent windows."
+                )
+                break
+
+    if best_policy_state is not None:
+        policy.load_state_dict(best_policy_state)
+        print(f"[PGTS-TD] Loaded best checkpoint by eval mean: {best_eval_mean:.3f}")
 
     return rewards_history
 
-def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=200, gamma=0.99, adaptive=False, max_m=20, m=4, entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, tau=0.01, v_epochs=1, K=3):
+def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=200, gamma=0.99, adaptive=False, max_m=20, m=4, entropy_coef=0.1, use_lagging=False, clip_epsilon=0.2, tau=0.01, v_epochs=5, critic_warmup_episodes=300, critic_warmup_multiplier=2.0, K=3, early_stop=False, early_stop_min_episodes=400, early_stop_check_every=50, early_stop_window=100, early_stop_delta=10.0, early_stop_patience=4, eval_interval=100, eval_episodes=5, eval_deterministic=True):
     
     print(f"Running PGTS Online with m={m}, adaptive={adaptive}, lagging={use_lagging}")
 
+    # Initialize adaptive components
+    lr_scheduler = DynamicLearningRateScheduler(
+        initial_lr_policy=5e-5, 
+        initial_lr_value=1e-3
+    )
+    reward_scaler = AdaptiveRewardScaler(init_scale=0.01)
+    entropy_scheduler = AdaptiveEntropyScheduler(initial_entropy_coef=entropy_coef, total_episodes=episodes)
+    grad_monitor = GradientMonitor()
+    
     rewards_history = []
     lag_policy = copy.deepcopy(policy).eval() if use_lagging else None
     current_m = (1 if adaptive else m)
+    bad_check_count = 0
+    best_eval_mean = -float("inf")
+    best_policy_state = copy.deepcopy(policy.state_dict())
 
     for ep in range(episodes):
-        if adaptive: current_m = get_adaptive_m(rewards_history, ep, current_m, max_m=max_m)
+        if adaptive: 
+            current_m = get_adaptive_m(rewards_history, ep, current_m, max_m=max_m)
+        
+        # Get adaptive entropy coefficient (decay over time)
+        current_entropy_coef = entropy_scheduler.get_entropy_coef(ep)
+        
         state, _ = env.reset()
-        total_reward = 0
+        total_reward = 0.0
+        scaled_total_reward = 0.0
         done = False
         
         while not done:
@@ -310,13 +531,26 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
 
-            reward = 0.01 * reward  # Scale reward for stability
+            raw_reward = float(reward)
+
+            # Use adaptive reward scaling
+            scaled_reward = raw_reward * reward_scaler.get_scale()
             
             state_t = torch.FloatTensor(state).unsqueeze(0)
             target_t = torch.tensor([target_v], dtype=torch.float32)
             action_t = torch.FloatTensor(action).unsqueeze(0)
             
-            train_value_network(optimizer_v, value_net, state_t, target_t, v_epochs=1)
+            # Adaptive value update epochs with early warmup so critic can get ahead
+            v_epochs_current = adaptive_value_epochs(
+                ep,
+                episodes,
+                base_epochs=v_epochs,
+                warmup_episodes=critic_warmup_episodes,
+                warmup_multiplier=critic_warmup_multiplier,
+                min_epochs=2,
+            )
+            train_value_network(optimizer_v, value_net, state_t, target_t, v_epochs=v_epochs_current)
+            
             with torch.no_grad():
                 adv_t = torch.tensor([target_v - value_net(state_t).item()], dtype=torch.float32)
 
@@ -326,16 +560,63 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
                 state_t, 
                 action_t, 
                 adv_t, 
-                entropy_coef, 
+                current_entropy_coef,  # Use adaptive entropy
                 (log_prob.detach() if use_lagging else None), 
                 clip_epsilon
             )
-            if use_lagging: update_ema(lag_policy, policy, tau)
-            state, total_reward = next_state, total_reward + reward
+            
+            if use_lagging: 
+                update_ema(lag_policy, policy, tau)
+            
+            state = next_state
+            total_reward = total_reward + raw_reward
+            scaled_total_reward = scaled_total_reward + scaled_reward
         
         rewards_history.append(total_reward)
+        reward_scaler.update_scale([total_reward])
+        
+        # Update learning rates based on performance
+        if len(rewards_history) >= 2:
+            avg_reward = np.mean(rewards_history[-5:]) if len(rewards_history) >= 5 else np.mean(rewards_history)
+            lr_policy, lr_value = lr_scheduler.get_learning_rates(ep, avg_reward)
+            lr_scheduler.update_optimizer_lr(optimizer_p, optimizer_v, lr_policy, lr_value)
+        
         if ep % 50 == 0:
-            print(f"[PGTS-TD] Ep {ep:4d} | Reward: {total_reward:8.6f} | m: {current_m}")
+            rolling_window = min(100, len(rewards_history))
+            rolling_raw_mean = float(np.mean(rewards_history[-rolling_window:]))
+            current_lr_p = float(optimizer_p.param_groups[0]["lr"])
+            current_lr_v = float(optimizer_v.param_groups[0]["lr"])
+            print(f"[PGTS-Online] Ep {ep:4d} | Raw: {total_reward:8.6f} | Scaled: {scaled_total_reward:8.6f} | m: {current_m} | "
+                  f"Roll100: {rolling_raw_mean:8.3f} | LR_P: {current_lr_p:.2e} | LR_V: {current_lr_v:.2e} | "
+                  f"Entropy: {current_entropy_coef:.3f} | Scale: {reward_scaler.get_scale():.4f}")
+
+        if eval_interval > 0 and (ep + 1) % eval_interval == 0:
+            eval_mean = evaluate_policy_mean(env, policy, episodes=eval_episodes, deterministic=eval_deterministic)
+            if eval_mean > best_eval_mean:
+                best_eval_mean = eval_mean
+                best_policy_state = copy.deepcopy(policy.state_dict())
+            print(f"[PGTS-Online][Eval] Ep {ep:4d} | mean_return: {eval_mean:8.3f} | best: {best_eval_mean:8.3f}")
+
+        if early_stop:
+            stop, bad_check_count = should_early_stop(
+                rewards_history,
+                min_episodes=early_stop_min_episodes,
+                check_every=early_stop_check_every,
+                window=early_stop_window,
+                plateau_delta=early_stop_delta,
+                max_bad_checks=early_stop_patience,
+                bad_check_count=bad_check_count,
+            )
+            if stop:
+                print(
+                    f"[PGTS-Online] Early stop at ep {ep} | "
+                    f"No sustained improvement over recent windows."
+                )
+                break
+
+    if best_policy_state is not None:
+        policy.load_state_dict(best_policy_state)
+        print(f"[PGTS-Online] Loaded best checkpoint by eval mean: {best_eval_mean:.3f}")
 
     return rewards_history
 
@@ -355,10 +636,22 @@ def run_pg_mstep(
     clip_epsilon=0.2,
     tau=0.01,
     v_epochs=25,
+    eval_interval=100,
+    eval_episodes=5,
+    eval_deterministic=True,
+    early_stop=False,
+    early_stop_min_episodes=400,
+    early_stop_check_every=50,
+    early_stop_window=100,
+    early_stop_delta=10.0,
+    early_stop_patience=4,
 ):
     print(f"Running PG-MStep with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = None 
+    bad_check_count = 0
+    best_eval_mean = -float("inf")
+    best_policy_state = copy.deepcopy(policy.state_dict())
 
     if use_lagging:
         lag_policy = copy.deepcopy(policy)
@@ -405,5 +698,33 @@ def run_pg_mstep(
 
         if ep % 50 == 0 or ep == 0 or ep == episodes - 1:
             print(f"[m-Step PG] Ep {ep:4d} | Reward: {total_reward:8.6f}")
+
+        if eval_interval > 0 and (ep + 1) % eval_interval == 0:
+            eval_mean = evaluate_policy_mean(env, policy, episodes=eval_episodes, deterministic=eval_deterministic)
+            if eval_mean > best_eval_mean:
+                best_eval_mean = eval_mean
+                best_policy_state = copy.deepcopy(policy.state_dict())
+            print(f"[m-Step PG][Eval] Ep {ep:4d} | mean_return: {eval_mean:8.3f} | best: {best_eval_mean:8.3f}")
+
+        if early_stop:
+            stop, bad_check_count = should_early_stop(
+                rewards_history,
+                min_episodes=early_stop_min_episodes,
+                check_every=early_stop_check_every,
+                window=early_stop_window,
+                plateau_delta=early_stop_delta,
+                max_bad_checks=early_stop_patience,
+                bad_check_count=bad_check_count,
+            )
+            if stop:
+                print(
+                    f"[m-Step PG] Early stop at ep {ep} | "
+                    f"No sustained improvement over recent windows."
+                )
+                break
+
+    if best_policy_state is not None:
+        policy.load_state_dict(best_policy_state)
+        print(f"[m-Step PG] Loaded best checkpoint by eval mean: {best_eval_mean:.3f}")
 
     return rewards_history

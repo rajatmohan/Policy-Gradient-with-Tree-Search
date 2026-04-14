@@ -1,5 +1,5 @@
-numpy
+numpy<2
 matplotlib
 torch
 gymnasium
-opencv-python
+opencv-python<4.13
