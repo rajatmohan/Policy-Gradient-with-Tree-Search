@@ -39,8 +39,8 @@ def move_model_with_fallback(model, preferred_device):
 def get_envs():
     lunar = LunarMDP()
     return [
-        lunar,
-        # TwoPeakMDP(),
+        # lunar,
+        TwoPeakMDP(),
         # ThreePeakMDP(),
     ]
 
@@ -180,10 +180,10 @@ if __name__ == "__main__":
         init_state = env.state
         pg_rewards = None
 
-        env.init_state = init_state
-        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        # env.init_state = init_state
+        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}
