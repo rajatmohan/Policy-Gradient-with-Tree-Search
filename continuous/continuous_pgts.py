@@ -13,7 +13,8 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
     m: Depth of the tree
     """
     if m == 0:
-        state_t = torch.FloatTensor(mdp.state).unsqueeze(0)
+        device = next(value_net.parameters()).device
+        state_t = torch.as_tensor(mdp.state, dtype=torch.float32, device=device).unsqueeze(0)
         # ask value n/w to guess the value of this state and return it
         with torch.no_grad():
             return value_net(state_t).item()
@@ -162,6 +163,10 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
     total_steps = 0
     episodes_completed = 0
     updates = 0
+    done = True
+    state = None
+    ep_reward = 0.0
+    device = next(policy.parameters()).device
 
     while episodes_completed < max_episodes:
         states, actions, rewards, dones, log_probs, checkpoints = [], [], [], [], [], []
@@ -209,9 +214,9 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
             env, search_policy, value_net, gamma, m, states, rewards, dones, checkpoints, search_interval=search_interval
         )
         
-        states_t = torch.FloatTensor(np.array(states))
-        actions_t = torch.FloatTensor(np.array(actions))
-        returns_t = torch.FloatTensor(returns)
+        states_t = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)
+        actions_t = torch.as_tensor(np.array(actions), dtype=torch.float32, device=device)
+        returns_t = torch.as_tensor(returns, dtype=torch.float32, device=device)
         log_probs_old = torch.stack(log_probs).detach()
         
         with torch.no_grad():
@@ -227,7 +232,7 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
         for _ in range(p_epochs):
             p_loss_total += train_policy_network(
                 optimizer_p, policy, states_t, actions_t, advantages, 
-                entropy_coef, log_probs_old, clip_epsilon
+                entropy_coef, log_probs_old if use_lagging else None, clip_epsilon
             )
             
         if use_lagging:
@@ -271,6 +276,7 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
     rewards_history = []
     lag_policy = copy.deepcopy(policy).eval() if use_lagging else None
     current_m = (1 if adaptive else m)
+    device = next(policy.parameters()).device
 
     for ep in range(episodes):
         if adaptive: 
@@ -298,14 +304,14 @@ def run_pgts_online(env, policy, value_net, optimizer_p, optimizer_v, episodes=2
 
             reward = 0.01 * reward  # Scale reward for stability
             
-            state_t = torch.FloatTensor(state).unsqueeze(0)
-            target_t = torch.tensor([target_v], dtype=torch.float32)
-            action_t = torch.FloatTensor(action).unsqueeze(0)
+            state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+            target_t = torch.as_tensor([target_v], dtype=torch.float32, device=device)
+            action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
             
             v_loss += train_value_network(optimizer_v, value_net, state_t, target_t, v_epochs=4) #
             with torch.no_grad():
                 # handle normalization of advantages
-                adv_t = torch.tensor([target_v - value_net(state_t).item()], dtype=torch.float32)
+                adv_t = torch.as_tensor([target_v - value_net(state_t).item()], dtype=torch.float32, device=device)
 
             p_loss += train_policy_network(
                 optimizer_p, 
@@ -349,6 +355,7 @@ def run_pgts(
     print(f"Running PGTS with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = None 
+    device = next(policy.parameters()).device
 
     if use_lagging:
         lag_policy = copy.deepcopy(policy)
@@ -385,9 +392,9 @@ def run_pgts(
             K=K, search_interval=4
         )
 
-        returns_t = torch.FloatTensor(returns)
-        states_t = torch.FloatTensor(np.array(states))
-        actions_t = torch.FloatTensor(np.array(actions)) 
+        returns_t = torch.as_tensor(returns, dtype=torch.float32, device=device)
+        states_t = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)
+        actions_t = torch.as_tensor(np.array(actions), dtype=torch.float32, device=device)
 
         # FIX 1: Calculate advantages BEFORE modifying the value network
         with torch.no_grad():
@@ -423,6 +430,7 @@ def run_pgts_td(
     print(f"Running PGTS-TD with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = copy.deepcopy(policy) if use_lagging else None
+    device = next(policy.parameters()).device
 
     current_m = (1 if adaptive else m)
 
@@ -450,9 +458,9 @@ def run_pgts_td(
                 td_targets.append(target_val)
 
         # 3. PREPARE TENSORS
-        returns_t = torch.FloatTensor(td_targets)
-        states_t = torch.FloatTensor(np.array(states))
-        actions_t = torch.FloatTensor(np.array(actions))
+        returns_t = torch.as_tensor(td_targets, dtype=torch.float32, device=device)
+        states_t = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)
+        actions_t = torch.as_tensor(np.array(actions), dtype=torch.float32, device=device)
 
         # 4. ADVANTAGE CALCULATION (On-policy TD-error)
         with torch.no_grad():
@@ -498,6 +506,7 @@ def run_pg_mstep(
     print(f"Running PG-MStep with m={m}, adaptive={adaptive}, lagging={use_lagging}")
     rewards_history = []
     lag_policy = None 
+    device = next(policy.parameters()).device
 
     if use_lagging:
         lag_policy = copy.deepcopy(policy)
@@ -516,12 +525,12 @@ def run_pg_mstep(
         # 4. COMPUTE M-STEP RETURNS (n-step bootstrapping)
         # We use the current Value Network to bootstrap after 'm' actual steps
         with torch.no_grad():
-            states_t_all = torch.FloatTensor(np.array(states))
+            states_t_all = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)
             values = value_net(states_t_all)
             
             # This uses your provided compute_m_step_returns logic
             returns = compute_m_step_returns(rewards, values, gamma, m, max_m=max_m if adaptive else m)
-            returns_t = torch.FloatTensor(returns)
+            returns_t = torch.as_tensor(returns, dtype=torch.float32, device=device)
 
         # 5. ADVANTAGE CALCULATION
         with torch.no_grad():
@@ -532,7 +541,7 @@ def run_pg_mstep(
 
         # 7. ACTOR UPDATE (Policy Network)
         old_probs = torch.stack(log_probs).detach() if use_lagging else None
-        train_policy_network(optimizer_p, policy, states_t_all, torch.FloatTensor(np.array(actions)), advantages, 
+        train_policy_network(optimizer_p, policy, states_t_all, torch.as_tensor(np.array(actions), dtype=torch.float32, device=device), advantages, 
                             entropy_coef = entropy_coef, log_probs_old = old_probs, clip_epsilon = clip_epsilon)
         
         if use_lagging:

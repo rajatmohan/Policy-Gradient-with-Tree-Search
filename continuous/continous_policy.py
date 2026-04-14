@@ -43,7 +43,8 @@ class Policy(nn.Module):
         return mean, std
 
     def sample_action(self, state):
-        state_t = torch.FloatTensor(state).unsqueeze(0)
+        device = next(self.parameters()).device
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
 
         mean, std = self(state_t)
 
@@ -52,8 +53,7 @@ class Policy(nn.Module):
         action = dist.sample()
         log_prob = dist.log_prob(action).sum()
         
-        # FIXED: Manually clip the action for the environment here
-        action_np = action.detach().numpy()[0]
-        action_clipped = np.clip(action_np, -1.0, 1.0)
+        # Clip action for environment bounds before converting back to host
+        action_np = torch.clamp(action, -1.0, 1.0).detach().cpu().numpy()[0]
 
         return action_np, log_prob

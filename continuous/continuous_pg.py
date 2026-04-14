@@ -12,6 +12,7 @@ def compute_returns(rewards, gamma):
 
 def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
     rewards_history = []
+    device = next(policy.parameters()).device
 
     for ep in range(episodes):
         # Unpack the 6 variables now returned by your updated MDP rollout
@@ -25,7 +26,7 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
 
         # Calculate Monte Carlo returns
         returns = compute_returns(rewards_np, gamma)
-        returns = torch.FloatTensor(returns)
+        returns = torch.as_tensor(returns, dtype=torch.float32, device=device)
 
         # Stack log probabilities collected during rollout
         log_probs_t = torch.stack(log_probs)

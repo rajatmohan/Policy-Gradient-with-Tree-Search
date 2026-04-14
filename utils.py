@@ -1,4 +1,11 @@
 import numpy as np
+import torch
+
+
+def get_torch_device(prefer_gpu=True):
+    if prefer_gpu and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 def project_simplex(v):
     """Euclidean projection onto probability simplex"""

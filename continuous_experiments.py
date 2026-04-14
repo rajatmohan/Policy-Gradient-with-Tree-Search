@@ -10,19 +10,38 @@ from gymnasium.wrappers import RecordVideo
 from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
+from utils import get_torch_device
 
 SEEDS = [60]
 EPISODES = 1500
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
+DEVICE = get_torch_device(prefer_gpu=True)
+
+
+def move_model_with_fallback(model, preferred_device):
+    """Move model to preferred device; fall back to CPU on CUDA OOM."""
+    try:
+        model.to(preferred_device)
+        return model, preferred_device
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "out of memory" in msg or "cuda error" in msg:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            cpu_device = torch.device("cpu")
+            model.to(cpu_device)
+            print(f"[WARN] CUDA OOM, using CPU for this run: {exc}")
+            return model, cpu_device
+        raise
 
 def get_envs():
     lunar = LunarMDP()
     return [
+        lunar,
         # TwoPeakMDP(),
         # ThreePeakMDP(),
-        lunar
     ]
 
 def run_single(method, seed, env, m = 10):
@@ -35,6 +54,8 @@ def run_single(method, seed, env, m = 10):
 
     policy = Policy(state_dim, action_dim) # actor
     value_net = Value(state_dim) # critic
+    policy, runtime_device = move_model_with_fallback(policy, DEVICE)
+    value_net, _ = move_model_with_fallback(value_net, runtime_device)
     
     optimizer_p = torch.optim.Adam(policy.parameters(), lr=3e-4)        
     optimizer_v = torch.optim.Adam(value_net.parameters(), lr=1e-3)
@@ -125,7 +146,8 @@ def record_agent(env, model_path, tag):
         action_dim = env.action_space.shape[0]
 
     policy = Policy(state_dim, action_dim)
-    policy.load_state_dict(torch.load(model_path))
+    policy, runtime_device = move_model_with_fallback(policy, DEVICE)
+    policy.load_state_dict(torch.load(model_path, map_location=runtime_device))
     policy.eval()
 
     video_env = RecordVideo(base_env, video_dir, episode_trigger=lambda e: True)
@@ -136,12 +158,12 @@ def record_agent(env, model_path, tag):
         step = 0
 
         while not done and step < 1000:
-            state_t = torch.FloatTensor(state).unsqueeze(0)
+            state_t = torch.as_tensor(state, dtype=torch.float32, device=runtime_device).unsqueeze(0)
             # get pure mean from the forward pass
             with torch.no_grad():
                 mean_action, _ = policy(state_t)  # ignore std
                 
-            action_np = mean_action.squeeze(0).numpy()
+            action_np = mean_action.squeeze(0).detach().cpu().numpy()
             state, _, done, _, _ = video_env.step(action_np)
             step += 1
 
@@ -149,17 +171,19 @@ def record_agent(env, model_path, tag):
         video_env.close()
 
 if __name__ == "__main__":
+    print(f"Using torch device: {DEVICE}")
     envs = get_envs()
     # M_VALUES = [1, 5, 10]
     M_VALUES = [2, 3, 5]
     for env in envs:
         env.reset()
         init_state = env.state
+        pg_rewards = None
 
-        env.init_state = init_state
-        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        # env.init_state = init_state
+        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}
@@ -185,4 +209,5 @@ if __name__ == "__main__":
             record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
 
         # run_experiment will crash if you pass multiple seeds. need to handle it
-        plot_all(env, pg_rewards, pgts_results)
+        if pg_rewards is not None:
+            plot_all(env, pg_rewards, pgts_results)
