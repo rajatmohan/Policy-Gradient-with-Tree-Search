@@ -17,7 +17,7 @@ from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
 
 SEEDS = [66]
-EPISODES = 2000
+EPISODES = 1000
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -25,9 +25,9 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 def get_envs():
     lunar = LunarMDP()
     return [
-        # TwoPeakMDP(),
+        TwoPeakMDP(),
         # ThreePeakMDP(),
-        lunar
+        # lunar
     ]
 
 def run_single(method, seed, env, m = 10):
@@ -174,10 +174,10 @@ if __name__ == "__main__":
         env.reset()
         init_state = env.state
 
-        # env.init_state = init_state
-        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        env.init_state = init_state
+        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}
