@@ -43,7 +43,7 @@ def run_pg(env, policy, optimizer, episodes=200, gamma=0.99):
         torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
         optimizer.step()
 
-        total_reward = float(np.sum(rewards_np))
+        total_reward = float(np.sum(rewards_np))*100
         rewards_history.append(total_reward)
 
         if ep % 50 == 0 or ep == 0 or ep == episodes - 1:

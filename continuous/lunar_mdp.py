@@ -41,6 +41,10 @@ class LunarMDP:
                 'v_lin': leg.linearVelocity.copy(), 'v_ang': leg.angularVelocity}
                 for leg in legs
             ],
+            # --- THE CRITICAL FIX ---
+            'prev_shaping': self.env.unwrapped.prev_shaping,
+            'game_over': self.env.unwrapped.game_over,
+            # ------------------------
             'step_count': self.env.unwrapped.step_ctr if hasattr(self.env.unwrapped, 'step_ctr') else 0
         }
         return checkpoint
@@ -59,6 +63,14 @@ class LunarMDP:
             leg.angle = state['angle']
             leg.linearVelocity = state['v_lin']
             leg.angularVelocity = state['v_ang']
+            
+        # --- THE CRITICAL FIX ---
+        self.env.unwrapped.prev_shaping = checkpoint['prev_shaping']
+        self.env.unwrapped.game_over = checkpoint['game_over']
+        # ------------------------
+        
+        if hasattr(self.env.unwrapped, 'step_ctr'):
+            self.env.unwrapped.step_ctr = checkpoint['step_count']
 
     def step(self, action):
         action = np.clip(action, -1, 1)
