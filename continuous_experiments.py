@@ -174,16 +174,16 @@ if __name__ == "__main__":
     print(f"Using torch device: {DEVICE}")
     envs = get_envs()
     # M_VALUES = [1, 5, 10]
-    M_VALUES = [2, 3, 5]
+    M_VALUES = [1, 3, 5, -1]
     for env in envs:
         env.reset()
         init_state = env.state
         pg_rewards = None
 
-        # env.init_state = init_state
-        # pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
-        # torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
-        # record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
+        env.init_state = init_state
+        pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
+        record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
         pgts_results = {}
         pgts_policies = {}

@@ -6,13 +6,25 @@ import copy
 from common.adaptive_m import get_adaptive_m
 from continuous import lunar_mdp
 
+
+def _clone_state(state):
+    return copy.deepcopy(state)
+
+
+def _set_env_state(env, state):
+    if hasattr(env, "_to_scalar"):
+        env.state = env._to_scalar(state)
+    else:
+        env.state = _clone_state(state)
+
 def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
     """
     Recursive T^m Operator.
     K: Number of actions to sample at each node (Branching factor)
     m: Depth of the tree
     """
-    if m == 0:
+    # Defensive base case: m can become <= 0 in adaptive/sentinel modes.
+    if m <= 0:
         device = next(value_net.parameters()).device
         state_t = torch.as_tensor(mdp.state, dtype=torch.float32, device=device).unsqueeze(0)
         # ask value n/w to guess the value of this state and return it
@@ -21,7 +33,7 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
 
     # if m > 0, we need to search. so, save exactly where the simulator is right now
     checkpoint = mdp.get_checkpoint()
-    current_state = mdp.state.copy()
+    current_state = _clone_state(mdp.state)
     
     max_q = -float('inf')
 
@@ -29,7 +41,7 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
     for _ in range(K):
         # reset simulator to starting checkpoint after exploration
         mdp.restore_checkpoint(checkpoint)
-        mdp.state = current_state
+        _set_env_state(mdp, current_state)
         
         action, _ = policy.sample_action(mdp.state)
         # tree search noise (different from policy noise)
@@ -56,7 +68,7 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
 
     # restore it again pre tree search 
     mdp.restore_checkpoint(checkpoint)
-    mdp.state = current_state
+    _set_env_state(mdp, current_state)
     return max_q
 
 # REVISIT
@@ -79,7 +91,7 @@ def compute_strided_Tm_returns(
             # why last step?
             elif i == T - 1 or i % search_interval == 0:
                 env.restore_checkpoint(checkpoints[i])
-                env.state = states[i]
+                _set_env_state(env, states[i])
                 returns[i] = compute_Tm_value(env, policy, value_net, gamma, m, K=K)
                 
             # condn 2: intermediate steps (TD bootstrapping backwards)
@@ -159,6 +171,8 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
     rewards_history = []
     # create an identical copy if use_lagging=True
     lag_policy = copy.deepcopy(policy).eval() if use_lagging else None
+    adaptive = (m == -1)
+    current_m = 1 if adaptive else m
     
     total_steps = 0
     episodes_completed = 0
@@ -169,9 +183,18 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
     device = next(policy.parameters()).device
 
     while episodes_completed < max_episodes:
+        if adaptive:
+            # Update search depth once per batch from reward trend.
+            current_m = get_adaptive_m(
+                rewards_history,
+                episodes_completed,
+                current_m,
+                max_m=20,
+                min_m=1,
+            )
+
         states, actions, rewards, dones, log_probs, checkpoints = [], [], [], [], [], []
         batch_ep_rewards = [] # track real rewards for this specific batch
-        
         # keep playing games until we hit our batch size limit
         while len(states) < batch_size:
             if done: # changed after getting results
@@ -211,7 +234,7 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
         search_policy = lag_policy if use_lagging else policy
         
         returns = compute_strided_Tm_returns(
-            env, search_policy, value_net, gamma, m, states, rewards, dones, checkpoints, search_interval=search_interval
+            env, search_policy, value_net, gamma, current_m, states, rewards, dones, checkpoints, search_interval=search_interval
         )
         
         states_t = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)

@@ -24,36 +24,39 @@ class BaseMDP(gym.Env):
         self.max_steps = 200
         self.step_count = 0
 
+    def _to_scalar(self, value):
+        arr = np.asarray(value, dtype=np.float32)
+        return float(arr.reshape(-1)[0])
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if self.init_state is None:
-            self.state = np.random.uniform(-2, 2)
+            self.state = float(np.random.uniform(-2, 2))
             self.init_state = self.state
         else:
-            self.state = self.init_state
+            self.state = self._to_scalar(self.init_state)
 
         self.step_count = 0
         return np.array([self.state], dtype=np.float32), {}
     
     def get_checkpoint(self):
         return {
-            'state': float(self.state),
+            'state': self._to_scalar(self.state),
             'step_count': int(self.step_count)
         }
 
     def restore_checkpoint(self, checkpoint):
-        self.state = checkpoint['state']
+        self.state = self._to_scalar(checkpoint['state'])
         self.step_count = checkpoint['step_count']
 
     def reward(self, x):
         raise NotImplementedError
 
     def step(self, action):
-        # Support both array and scalar actions
-        a = action[0] if isinstance(action, (np.ndarray, list)) else action
-        a = np.clip(a, -1, 1)
+        # Normalize action to a scalar so state stays scalar throughout rollout.
+        a = np.clip(self._to_scalar(action), -1.0, 1.0)
 
-        self.state = self.state + a + np.random.randn() * self.noise
+        self.state = self._to_scalar(self.state + a + np.random.randn() * self.noise)
 
         # Boundary logic
         terminated = False
