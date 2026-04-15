@@ -7,12 +7,12 @@ from continuous.continuous_value import Value
 from continuous.continuous_pg import run_pg
 from continuous.continuous_pgts import run_pgts_batch
 from gymnasium.wrappers import RecordVideo
-from continuous.env_two_peak import TwoPeakMDP
-from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
+import pickle
+import time
 
 SEEDS = [60]
-EPISODES = 1500
+EPISODES = 1000
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -151,13 +151,22 @@ def record_agent(env, model_path, tag):
 if __name__ == "__main__":
     envs = get_envs()
     # M_VALUES = [1, 5, 10]
-    M_VALUES = [2, 3, 5]
+    M_VALUES = [1, 2, 3]
     for env in envs:
         env.reset()
         init_state = env.state
 
+        experiment_times = {}
+
         env.init_state = init_state
+        print(f"\n[START] PG Baseline | {env.name}")
+        
+        start_time = time.time()
         pg_rewards, pg_states, pg_policy = run_experiment("PG", env)
+        pg_duration = time.time() - start_time
+        experiment_times["PG"] = pg_duration
+        
+        print(f"[DONE] PG Baseline finished in {pg_duration:.2f} seconds.")
         torch.save(pg_policy.state_dict(), f"{RESULT_DIR}/{env.name}_pg.pt")
         record_agent(env, f"{RESULT_DIR}/{env.name}_pg.pt", f"{env.name}_PG")
 
@@ -165,9 +174,15 @@ if __name__ == "__main__":
         pgts_policies = {}
         for m in M_VALUES:
             # PGTS without lagging
-            print(f"\nRunning PGTS m={m} | {env.name}")
+            print(f"\n[START] PGTS m={m} | {env.name}")
             env.init_state = init_state
+            
+            start_time = time.time()
             rewards, states, policy = run_experiment("PGTS", env, m=m)
+            pgts_duration = time.time() - start_time
+            experiment_times[f"PGTS_m{m}"] = pgts_duration
+            
+            print(f"[DONE] PGTS m={m} finished in {pgts_duration:.2f} seconds.")
             pgts_results[f"m={m}"] = rewards
             pgts_policies[f"m={m}"] = policy
             model_path = f"{RESULT_DIR}/{env.name}_pgts_m{m}.pt"
@@ -175,14 +190,30 @@ if __name__ == "__main__":
             record_agent(env, model_path, f"{env.name}_PGTS_m{m}")
 
             # PGTS with lagging
-            print(f"\nRunning PGTS LAG m={m} | {env.name}")
+            print(f"\n[START] PGTS LAG m={m} | {env.name}")
             env.init_state = init_state
+            
+            start_time = time.time()
             rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
+            lag_duration = time.time() - start_time
+            experiment_times[f"PGTS_LAG_m{m}"] = lag_duration
+            
+            print(f"[DONE] PGTS LAG m={m} finished in {lag_duration:.2f} seconds.")
             pgts_results[f"LAG_m={m}"] = rewards
             pgts_policies[f"LAG_m={m}"] = policy
             model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
             torch.save(policy.state_dict(), model_path)
             record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
+        
+        experiment_data = {
+            "PG": pg_rewards,
+            "PGTS": pgts_results,
+            "TIMES": experiment_times
+        }
+        
+        data_path = f"{RESULT_DIR}/{env.name}_rewards_data.pkl"
+        with open(data_path, "wb") as f:
+            pickle.dump(experiment_data, f)
 
         # run_experiment will crash if you pass multiple seeds. need to handle it
         plot_all(env, pg_rewards, pgts_results)

@@ -162,6 +162,10 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
     total_steps = 0
     episodes_completed = 0
     updates = 0
+    # changed
+    state, _ = env.reset()
+    done = False
+    ep_reward = 0
 
     while episodes_completed < max_episodes:
         states, actions, rewards, dones, log_probs, checkpoints = [], [], [], [], [], []
