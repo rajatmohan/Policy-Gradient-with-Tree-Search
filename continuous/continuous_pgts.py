@@ -78,7 +78,7 @@ def compute_strided_Tm_returns(
             # why last step?
             elif i == T - 1 or i % search_interval == 0:
                 env.restore_checkpoint(checkpoints[i])
-                env.state = float(np.asarray(states[i]).squeeze())
+                env.state = np.array(states[i], copy=True)
                 returns[i] = compute_Tm_value(env, policy, value_net, gamma, m, K=K)
                 
             # condn 2: intermediate steps (TD bootstrapping backwards)
@@ -448,7 +448,7 @@ def run_pgts_td(
             else:
                 # TD(0) logic: Target = Tree Search Lookahead from current state
                 env.restore_checkpoint(checkpoints[i])
-                env.state = float(np.asarray(states[i]).squeeze())
+                env.state = np.array(states[i], copy=True)
                 target_val = compute_Tm_value(env, policy, value_net, gamma, current_m, K=K)
                 td_targets.append(target_val)
 

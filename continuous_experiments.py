@@ -99,7 +99,7 @@ def plot_saved_results(results_path):
 def get_envs():
     lunar = LunarMDP()
     return [
-        # TwoPeakMDP(),
+        TwoPeakMDP(),
         # ThreePeakMDP(),
         # lunar
     ]
@@ -239,15 +239,15 @@ if __name__ == "__main__":
             record_agent(env, model_path, f"{env.name}_PGTS_m{m}")
 
             # PGTS with lagging
-            print(f"\nRunning PGTS LAG m={m} | {env.name}")
-            env.init_state = init_state
-            rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
-            pgts_results[f"LAG_m={m}"] = rewards
-            pgts_policies[f"LAG_m={m}"] = policy
-            results_path = save_experiment_results(env.name, pg_rewards=pg_rewards, pgts_results=pgts_results, seeds=SEEDS, m_values=M_VALUES)
-            model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
-            torch.save(policy.state_dict(), model_path)
-            record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
+            # print(f"\nRunning PGTS LAG m={m} | {env.name}")
+            # env.init_state = init_state
+            # rewards, states, policy = run_experiment("PGTS_WITH_LAGGING", env, m=m)
+            # pgts_results[f"LAG_m={m}"] = rewards
+            # pgts_policies[f"LAG_m={m}"] = policy
+            # results_path = save_experiment_results(env.name, pg_rewards=pg_rewards, pgts_results=pgts_results, seeds=SEEDS, m_values=M_VALUES)
+            # model_path = f"{RESULT_DIR}/{env.name}_pgts_lag_m{m}.pt"
+            # torch.save(policy.state_dict(), model_path)
+            # record_agent(env, model_path, f"{env.name}_PGTS_lag_m{m}")
 
         # run_experiment will crash if you pass multiple seeds. need to handle it
         results_path = save_experiment_results(env.name, pg_rewards=pg_rewards, pgts_results=pgts_results, seeds=SEEDS, m_values=M_VALUES)
