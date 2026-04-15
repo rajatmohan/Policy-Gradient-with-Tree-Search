@@ -37,18 +37,20 @@ class BaseMDP(gym.Env):
     
     def get_checkpoint(self):
         return {
-            'state': float(self.state),
+            'state': float(np.asarray(self.state).squeeze()),
             'step_count': int(self.step_count)
         }
 
     def restore_checkpoint(self, checkpoint):
-        self.state = checkpoint['state']
+        self.state = float(checkpoint['state'])
         self.step_count = checkpoint['step_count']
 
     def reward(self, x):
         raise NotImplementedError
 
     def step(self, action):
+        self.state = float(np.asarray(self.state).squeeze())
+
         # Support both array and scalar actions
         a = action[0] if isinstance(action, (np.ndarray, list)) else action
         a = np.clip(a, -1, 1)

@@ -43,7 +43,7 @@ class Policy(nn.Module):
         return mean, std
 
     def sample_action(self, state):
-        state_t = torch.FloatTensor(state).unsqueeze(0)
+        state_t = torch.as_tensor(state, dtype=torch.float32).view(1, -1)
 
         mean, std = self(state_t)
 

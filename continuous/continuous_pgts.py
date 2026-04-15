@@ -13,14 +13,14 @@ def compute_Tm_value(mdp, policy, value_net, gamma, m, K=3):
     m: Depth of the tree
     """
     if m == 0:
-        state_t = torch.FloatTensor(mdp.state).unsqueeze(0)
+        state_t = torch.as_tensor(mdp.state, dtype=torch.float32).view(1, -1)
         # ask value n/w to guess the value of this state and return it
         with torch.no_grad():
             return value_net(state_t).item()
 
     # if m > 0, we need to search. so, save exactly where the simulator is right now
     checkpoint = mdp.get_checkpoint()
-    current_state = mdp.state.copy()
+    current_state = np.array(mdp.state, copy=True)
     
     max_q = -float('inf')
 
@@ -78,7 +78,7 @@ def compute_strided_Tm_returns(
             # why last step?
             elif i == T - 1 or i % search_interval == 0:
                 env.restore_checkpoint(checkpoints[i])
-                env.state = states[i]
+                env.state = float(np.asarray(states[i]).squeeze())
                 returns[i] = compute_Tm_value(env, policy, value_net, gamma, m, K=K)
                 
             # condn 2: intermediate steps (TD bootstrapping backwards)
@@ -162,6 +162,9 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
     total_steps = 0
     episodes_completed = 0
     updates = 0
+    state, _ = env.reset()
+    done = False
+    ep_reward = 0
 
     while episodes_completed < max_episodes:
         states, actions, rewards, dones, log_probs, checkpoints = [], [], [], [], [], []
@@ -227,7 +230,7 @@ def run_pgts_batch(env, policy, value_net, optimizer_p, optimizer_v, max_episode
         for _ in range(p_epochs):
             p_loss_total += train_policy_network(
                 optimizer_p, policy, states_t, actions_t, advantages, 
-                entropy_coef, log_probs_old, clip_epsilon
+                entropy_coef, log_probs_old if use_lagging else None, clip_epsilon
             )
             
         if use_lagging:
@@ -445,7 +448,7 @@ def run_pgts_td(
             else:
                 # TD(0) logic: Target = Tree Search Lookahead from current state
                 env.restore_checkpoint(checkpoints[i])
-                env.state = states[i]
+                env.state = float(np.asarray(states[i]).squeeze())
                 target_val = compute_Tm_value(env, policy, value_net, gamma, current_m, K=K)
                 td_targets.append(target_val)
 
