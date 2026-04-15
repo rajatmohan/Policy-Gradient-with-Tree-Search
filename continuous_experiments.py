@@ -12,8 +12,8 @@ from continuous.env_two_peak import TwoPeakMDP
 from continuous.env_three_peak import ThreePeakMDP
 from continuous.lunar_mdp import LunarMDP
 
-SEEDS = [60]
-EPISODES = 1000
+SEEDS = [61]
+EPISODES = 600
 
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
@@ -96,11 +96,66 @@ def plot_saved_results(results_path):
         "PGTS Lag",
     )
 
+
+def moving_average(series, window_size=50):
+    window_size = max(1, int(window_size))
+    values = np.asarray(series, dtype=np.float32)
+    if values.size == 0:
+        return values
+
+    if window_size == 1:
+        return values
+
+    kernel = np.ones(window_size, dtype=np.float32) / window_size
+    smoothed = np.convolve(values, kernel, mode="valid")
+    pad = np.full(window_size - 1, np.nan, dtype=np.float32)
+    return np.concatenate([pad, smoothed])
+
+
+def plot_filtered_saved_results(results_path, include_m=(1, 2), window_size=50):
+    payload = load_experiment_results(results_path)
+    env_name = payload["env_name"]
+    pg_rewards = np.array(payload["pg_rewards"], dtype=np.float32)
+    pgts_results = payload.get("pgts_results") or {}
+
+    plt.figure(figsize=(12, 7))
+
+    pg_mean = pg_rewards.mean(axis=0)
+    plt.plot(pg_mean, label="PG (raw)", linewidth=1.5, alpha=0.5)
+    plt.plot(moving_average(pg_mean, window_size), label=f"PG (MA{window_size})", linewidth=3)
+
+    for m in include_m:
+        key = f"m={m}"
+        if key not in pgts_results:
+            continue
+
+        rewards = np.array(pgts_results[key], dtype=np.float32)
+        mean_rewards = rewards.mean(axis=0)
+        plt.plot(mean_rewards, label=f"PGTS {key} (raw)", linewidth=1.2, alpha=0.45, linestyle="--")
+        plt.plot(
+            moving_average(mean_rewards, window_size),
+            label=f"PGTS {key} (MA{window_size})",
+            linewidth=2.5,
+            linestyle="--",
+        )
+
+    plt.xlabel("Episodes")
+    plt.ylabel("Reward")
+    plt.title(f"{env_name}: PG vs PGTS (m=1,2) with Moving Average")
+    plt.legend()
+    plt.grid(alpha=0.2)
+
+    output_path = f"{RESULT_DIR}/{env_name}_pg_vs_pgts_m1_m2_ma{window_size}.png"
+    plt.savefig(output_path)
+    plt.close()
+
+    return output_path
+
 def get_envs():
     lunar = LunarMDP()
     return [
         TwoPeakMDP(),
-        # ThreePeakMDP(),
+        ThreePeakMDP(),
         # lunar
     ]
 

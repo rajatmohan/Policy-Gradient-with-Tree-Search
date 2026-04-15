@@ -150,31 +150,31 @@ def plot_experiment(mdp, mdp_type, mu_type, init_type, lr, steps, m_values):
 
 if __name__ == "__main__":
     mdp_types = ['ladder', 'random', 'tightrope', 'grid']  
-    mdp_types = ['ladder']  
+    mdp_types = ['tightrope']  
     
     config = {
         'ladder': {
             'start': {
                 0.05: {
                     'steps': 200,
-                    'm_values': [1, 2, 4, 6, -1],
+                    'm_values': [1, 2, 4, 6],
                     'init_type': ['left']
                 },
                 2.0: {
                     'steps': 30,
-                    'm_values': [1, 2, 4, -1],
+                    'm_values': [1, 2, 4],
                     'init_type': ['left']
                 }
             },
             'uniform': {
                 0.05: {
                     'steps': 300,
-                    'm_values': [1, 2, 4, 6, -1],
+                    'm_values': [1, 2, 4, 6],
                     'init_type': ['left']
                 },
                 2.0: {
                     'steps': 50,
-                    'm_values': [1, 2, 4, -1],
+                    'm_values': [1, 2, 4],
                     'init_type': ['left']
                 }
             }

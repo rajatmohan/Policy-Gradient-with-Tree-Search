@@ -37,6 +37,34 @@ def create_tightrope_mdp(gamma=0.9, mu=None):
 
         R[s, 1] = 0.0
 
+    # for s in range(S):
+    #     # Terminal states (absorbing, but yield ZERO continuous reward)
+    #     if s == good_terminal:
+    #         P[s, :, s] = 1.0
+    #         R[s, :] = 0.0  # Changed from 1.0
+    #         continue
+
+    #     if s == bad_terminal:
+    #         P[s, :, s] = 1.0
+    #         R[s, :] = 0.0  # Changed from -10.0
+    #         continue
+
+    #     # Action 0 (Left)
+    #     if s == 0:
+    #         P[s, 0, s] = 1.0
+    #         R[s, 0] = 0.0
+    #     elif s == 1:
+    #         P[s, 0, bad_terminal] = 1.0
+    #         R[s, 0] = -10.0  # <--- Penalty applied ONCE upon falling
+
+    #     # Action 1 (Right)
+    #     if s == 0:
+    #         P[s, 1, s + 1] = 1.0
+    #         R[s, 1] = 0.0
+    #     elif s == 1:
+    #         P[s, 1, good_terminal] = 1.0
+    #         R[s, 1] = 1.0    # <--- Reward applied ONCE upon success
+
     if mu is None:
         mu = np.zeros(S)
         mu[0] = 1.0
